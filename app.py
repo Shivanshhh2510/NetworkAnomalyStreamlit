@@ -24,7 +24,9 @@ def load_artifacts():
 iso_model, ae_model, lof_model, scaler, train_cols, iso_shap_imp = load_artifacts()
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
-def preprocess_raw_kdd(buf):
+@st.cache_data(show_spinner=False, max_entries=1)
+def preprocess_raw_kdd(buf, nrows):
+    # column names for KDD-Cup data
     cols = [
         "duration","protocol_type","service","flag","src_bytes","dst_bytes","land",
         "wrong_fragment","urgent","hot","num_failed_logins","logged_in","num_compromised",
@@ -38,7 +40,7 @@ def preprocess_raw_kdd(buf):
         "dst_host_srv_serror_rate","dst_host_rerror_rate","dst_host_srv_rerror_rate",
         "label"
     ]
-    df = pd.read_csv(buf, names=cols)
+    df = pd.read_csv(buf, names=cols, nrows=nrows)
     df["attack_type"] = (df["label"] != "normal.").astype(int)
     df = df.drop(columns=["label","attack_type","num_outbound_cmds"])
     df = pd.get_dummies(df, columns=["protocol_type","service","flag"])
@@ -71,6 +73,12 @@ with tabs[0]:
         "Upload type:",
         ("Raw KDD data", "Preprocessed CSV")
     )
+    # NEW: sample size for raw uploads
+    sample_rows = st.sidebar.slider(
+        "Rows to sample from raw file",
+        min_value=10000, max_value=200000,
+        value=50000, step=10000
+    )
     iso_cont = st.sidebar.slider("IForest contamination", 0.01, 0.5, 0.1, 0.01)
     lof_cont = st.sidebar.slider("LOF contamination",    0.01, 0.5, 0.02, 0.01)
     ae_thresh= st.sidebar.slider("AE threshold",        0.0, 1.0, 0.02, 0.005)
@@ -83,7 +91,7 @@ with tabs[0]:
     st.title("🚨 Network Traffic Anomaly Detection")
     uploaded = st.file_uploader(
         "Upload your dataset",
-        type=None,
+        type=["csv"],
         help="Either raw KDD data file or a preprocessed CSV"
     )
     if not uploaded:
@@ -91,7 +99,8 @@ with tabs[0]:
     else:
         # 1) Preprocess
         if upload_type == "Raw KDD data":
-            df_proc = preprocess_raw_kdd(uploaded)
+            st.warning(f"⚡ Processing first {sample_rows:,} rows of raw KDD upload…")
+            df_proc = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
         else:
@@ -134,7 +143,7 @@ with tabs[0]:
         st.bar_chart(dist)
 
         csv = df.to_csv(index=False).encode()
-        st.download_button("⬇️ Download Results", csv, "results.csv", "text/csv")
+        st.download_button("⬇️ Download Results", csv, "anomaly_results.csv", "text/csv")
 
 # ─── Tab 2: EDA ──────────────────────────────────────────────────────────────────
 with tabs[1]:
