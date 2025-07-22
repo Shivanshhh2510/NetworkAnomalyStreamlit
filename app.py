@@ -28,13 +28,14 @@ iso_model, ae_model, lof_model, scaler, train_cols, iso_shap_imp = load_artifact
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
 def detect_compression(buf):
     name = getattr(buf, "name", "").lower()
-    if name.endswith((".gz", ".gzip")): return "gzip"
-    if name.endswith(".zip"):            return "zip"
+    if name.endswith((".gz","gzip")): return "gzip"
+    if name.endswith(".zip"): return "zip"
     return None
 
 @st.cache_data(show_spinner=False, max_entries=1)
 def preprocess_raw_kdd(buf, nrows):
-    cols = [  # KDD feature names + label
+    # 1) Read raw to preserve protocol_type
+    cols = [
         "duration","protocol_type","service","flag","src_bytes","dst_bytes","land",
         "wrong_fragment","urgent","hot","num_failed_logins","logged_in","num_compromised",
         "root_shell","su_attempted","num_root","num_file_creations","num_shells",
@@ -48,13 +49,14 @@ def preprocess_raw_kdd(buf, nrows):
         "label"
     ]
     comp = detect_compression(buf)
-    df = pd.read_csv(buf, names=cols, nrows=nrows, compression=comp)
-    df["attack_type"] = (df["label"] != "normal.").astype(int)
-    df = df.drop(columns=["label","attack_type","num_outbound_cmds"])
+    raw = pd.read_csv(buf, names=cols, nrows=nrows, compression=comp)
+    raw["attack_type"] = (raw["label"] != "normal.").astype(int)
+    # 2) Preprocess for model
+    df = raw.drop(columns=["label","attack_type","num_outbound_cmds"])
     df = pd.get_dummies(df, columns=["protocol_type","service","flag"])
     for c in train_cols:
         if c not in df.columns: df[c] = 0
-    return df[train_cols]
+    return df[train_cols], raw[["protocol_type"]]
 
 def predict_iso(X):
     p = iso_model.predict(X); return np.where(p==1,0,1)
@@ -65,7 +67,6 @@ def predict_ae(X, thresh):
     return mse, np.where(mse>thresh,1,0)
 
 def predict_lof_scores(X):
-    # LOF uses decision_function for outlier "normality" score
     return lof_model.decision_function(X)
 
 def predict_lof(X):
@@ -79,32 +80,36 @@ with tabs[0]:
     st.sidebar.header("Settings")
     upload_type = st.sidebar.radio("Upload type:",("Raw KDD data","Preprocessed CSV"))
     sample_rows = st.sidebar.slider("Rows to sample (raw)",10000,200000,50000,10000)
-    iso_cont = st.sidebar.slider("IForest contamination",0.01,0.5,0.1,0.01)
-    lof_cont = st.sidebar.slider("LOF contamination",0.01,0.5,0.02,0.01)
-    ae_thresh= st.sidebar.slider("AE threshold",0.0,1.0,0.02,0.005)
-    model_choice = st.sidebar.selectbox("Model:",[
-        "Isolation Forest","Autoencoder","Local Outlier Factor","Hybrid – Union","Hybrid – Intersection"
+    iso_cont    = st.sidebar.slider("IForest contamination",0.01,0.5,0.1,0.01)
+    lof_cont    = st.sidebar.slider("LOF contamination",   0.01,0.5,0.02,0.01)
+    ae_thresh   = st.sidebar.slider("AE threshold",       0.0,1.0,0.02,0.005)
+    model_choice= st.sidebar.selectbox("Model:",[
+        "Isolation Forest","Autoencoder","Local Outlier Factor",
+        "Hybrid – Union","Hybrid – Intersection"
     ])
 
     st.title("🚨 Network Traffic Anomaly Detection")
     uploaded = st.file_uploader(
-        "Upload dataset", type=["csv","gz","zip"],
+        "Upload dataset",
+        type=["csv","gz","zip"],
         help="Raw KDD (.csv/.gz/.zip) or preprocessed CSV"
     )
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
-        # Preprocess
         if upload_type=="Raw KDD data":
             st.warning(f"Processing first {sample_rows:,} rows of raw upload…")
-            df_proc = preprocess_raw_kdd(uploaded, sample_rows)
-            X = scaler.transform(df_proc.values); df = df_proc.copy()
+            df_proc, df_raw_proto = preprocess_raw_kdd(uploaded, sample_rows)
+            X = scaler.transform(df_proc.values)
+            df = df_proc.copy()
+            raw_proto = df_raw_proto.copy()
         else:
             comp = detect_compression(uploaded)
             df = pd.read_csv(uploaded, compression=comp)
             X = df.reindex(columns=train_cols).fillna(0).values
+            raw_proto = None
 
-        # Refit models
+        # Refit
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
@@ -116,30 +121,26 @@ with tabs[0]:
         elif model_choice=="Local Outlier Factor":
             preds = predict_lof(X)
         elif model_choice=="Hybrid – Union":
-            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_or(iso_p,ae_p).astype(int)
+            iso_p, _ = predict_iso(X), predict_ae(X,ae_thresh)[1]
+            preds = np.logical_or(iso_p,predict_ae(X,ae_thresh)[1]).astype(int)
         else:
-            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_and(iso_p,ae_p).astype(int)
+            iso_p, _ = predict_iso(X), predict_ae(X,ae_thresh)[1]
+            preds = np.logical_and(iso_p,predict_ae(X,ae_thresh)[1]).astype(int)
 
-        # Display
         df["anomaly"] = preds
-        st.subheader("Sample of Results")
+        st.subheader("Sample Results")
         st.dataframe(df.head(10))
 
         if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
             rec = ae_model.predict(X)
             feat_err = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
             st.subheader("Top 10 AE Reconstruction-Error Features")
-            st.write("Features the autoencoder struggles with most:")
+            st.write("Features the autoencoder struggles with most.")
             st.bar_chart(feat_err.nlargest(10))
 
         st.subheader("Anomaly Distribution")
-        st.write("Count of normal vs. attack instances in this sample")
+        st.write("Count of normal vs. attack instances in this sample.")
         st.bar_chart(df["anomaly"].map({0:"Normal",1:"Attack"}).value_counts())
-
-        csv = df.to_csv(index=False).encode()
-        st.download_button("⬇️ Download Results",csv,"results.csv","text/csv")
 
 # ─── Tab 2: EDA ──────────────────────────────────────────────────────────────────
 with tabs[1]:
@@ -147,13 +148,19 @@ with tabs[1]:
     if 'df' not in locals():
         st.info("Upload data to see EDA.")
     else:
-        st.subheader("Protocol Type Breakdown")
-        st.write("Shows which network protocols (TCP/UDP/ICMP) are more common in anomalies vs normal:")
-        fig1 = px.bar(df, x="protocol_type", color="anomaly", barmode="group")
-        st.plotly_chart(fig1, use_container_width=True)
+        # Protocol breakdown only if raw
+        if raw_proto is not None:
+            st.subheader("Protocol Type Breakdown")
+            st.write("Which network protocols appear more often in anomalies vs normal.")
+            proto_df = pd.concat([raw_proto, df["anomaly"]], axis=1)
+            fig1 = px.bar(
+                proto_df, x="protocol_type", color="anomaly", barmode="group",
+                labels={"anomaly":"0=Normal,1=Attack"}
+            )
+            st.plotly_chart(fig1, use_container_width=True)
 
         st.subheader("Feature Correlation Heatmap")
-        st.write("How numeric features relate—strong correlations indicate linked behaviors.")
+        st.write("How key numeric features correlate with each other.")
         num_cols = ["duration","src_bytes","dst_bytes","count","srv_count"]
         corr = df[num_cols].corr()
         fig2, ax = plt.subplots(figsize=(6,5))
@@ -161,42 +168,47 @@ with tabs[1]:
         st.pyplot(fig2)
 
         st.subheader("Data Distributions")
-        st.write("Boxplots compare distributions of src_bytes and dst_bytes for anomalies vs. normal.")
-        fig3, ax = plt.subplots(1,2, figsize=(12,4))
-        sns.boxplot(x=df["anomaly"], y=df["src_bytes"], ax=ax[0])
-        ax[0].set_title("src_bytes")
-        sns.boxplot(x=df["anomaly"], y=df["dst_bytes"], ax=ax[1])
-        ax[1].set_title("dst_bytes")
+        st.write("Boxplots compare src_bytes and dst_bytes for anomalies vs normal.")
+        fig3, axes = plt.subplots(1,2, figsize=(12,4))
+        sns.boxplot(x=df["anomaly"], y=df["src_bytes"], ax=axes[0])
+        axes[0].set_title("src_bytes")
+        sns.boxplot(x=df["anomaly"], y=df["dst_bytes"], ax=axes[1])
+        axes[1].set_title("dst_bytes")
         st.pyplot(fig3)
 
 # ─── Tab 3: Explain ─────────────────────────────────────────────────────────────
 with tabs[2]:
     st.header("🧠 Explainability")
-    model_explain = st.selectbox("Explain model:",[
+    choice = st.selectbox("Explain model:", [
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
-    if model_explain=="Isolation Forest":
-        st.write("Global SHAP importances show which features drive the forest’s anomaly decisions:")
-        df_shap = iso_shap_imp.reset_index().rename(columns={"index":"feature","importance":"importance"})
-        fig = px.bar(df_shap, x="importance", y="feature", orientation="h",
-                     labels={"importance":"Mean |SHAP value|"})
-        fig.update_layout(yaxis_categoryorder="total ascending",plot_bgcolor="white")
+    if choice=="Isolation Forest":
+        st.write("Global SHAP importances for Isolation Forest decisions.")
+        df_shap = iso_shap_imp.reset_index().rename(
+            columns={"index":"feature","0":"importance"}
+        )
+        fig = px.bar(
+            df_shap, x="importance", y="feature", orientation="h",
+            labels={"importance":"Mean |SHAP value|"}
+        )
+        fig.update_layout(yaxis_categoryorder="total ascending",
+                          plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
 
-    elif model_explain=="Autoencoder":
-        st.write("Features with highest reconstruction error—autoencoder’s blind spots:")
+    elif choice=="Autoencoder":
+        st.write("Top features by autoencoder reconstruction error.")
         rec = ae_model.predict(X)
         feat_err = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
-        fig = px.bar(
-            feat_err.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"}),
-            x="error", y="feature", orientation="h",
-            labels={"error":"Reconstruction MSE"}
+        df_err = feat_err.nlargest(10).reset_index().rename(
+            columns={"index":"feature",0:"error"}
         )
+        fig = px.bar(df_err, x="error", y="feature", orientation="h",
+                     labels={"error":"Reconstruction MSE"})
         fig.update_layout(yaxis_categoryorder="total ascending")
         st.plotly_chart(fig, use_container_width=True)
 
-    else:  # LOF
-        st.write("Histogram of LOF ‘normality’ scores—lower = more anomalous:")
+    else:
+        st.write("LOF ‘normality’ score distribution (lower = more anomalous).")
         scores = predict_lof_scores(X)
         fig = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         st.plotly_chart(fig, use_container_width=True)
