@@ -7,12 +7,7 @@ from tensorflow.keras.models import load_model
 import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.metrics import (
-    confusion_matrix,
-    classification_report,
-    roc_curve,
-    auc
-)
+from sklearn.decomposition import PCA
 
 st.set_page_config(page_title="Network Traffic Anomaly Detection", layout="wide")
 
@@ -79,7 +74,7 @@ def lof_scores(X):
     return lof_model.decision_function(X)
 
 # ─── UI ───────────────────────────────────────────────────────────────────────────
-tabs = st.tabs(["🔍 Predict", "📊 EDA", "🧠 Explain", "📈 Performance"])
+tabs = st.tabs(["🔍 Predict", "📊 EDA", "🧠 Explain", "🔬 Embedding"])
 
 # ─── Tab 1: Predict ───────────────────────────────────────────────────────────────
 with tabs[0]:
@@ -96,8 +91,7 @@ with tabs[0]:
 
     st.title("🚨 Network Traffic Anomaly Detection")
     uploaded = st.file_uploader(
-        "Upload dataset",
-        type=["csv","gz","zip"],
+        "Upload dataset", type=["csv","gz","zip"],
         help="Raw KDD (.csv/.gz/.zip) or preprocessed CSV"
     )
     if not uploaded:
@@ -105,7 +99,7 @@ with tabs[0]:
     else:
         # 1) Preprocess
         if upload_type=="Raw KDD data":
-            st.warning(f"Processing first {sample_rows:,} rows…")
+            st.warning(f"Processing first {sample_rows:,} rows of raw data…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
@@ -116,7 +110,7 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state["last_meta"] = None
 
-        # 2) Optional re-fit
+        # 2) Optionally re-fit models
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
@@ -129,10 +123,10 @@ with tabs[0]:
             preds = predict_lof(X)
         elif model_choice=="Hybrid – Union":
             iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_or(iso_p,ae_p).astype(int)
+            preds = np.logical_or(iso_p, ae_p).astype(int)
         else:
             iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_and(iso_p,ae_p).astype(int)
+            preds = np.logical_and(iso_p, ae_p).astype(int)
 
         df["anomaly"] = preds
         st.session_state["last_df"]    = df
@@ -141,7 +135,7 @@ with tabs[0]:
 
         # Display results
         st.subheader("Sample Results")
-        st.dataframe(df.head(10))
+        st.dataframe(df.head(10), use_container_width=True)
 
         if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
             rec      = ae_model.predict(X)
@@ -168,7 +162,8 @@ with tabs[1]:
             st.subheader("Protocol Breakdown")
             proto = raw_meta.copy()
             proto["anomaly"] = df["anomaly"].map({0:"Normal",1:"Attack"})
-            fig1 = px.bar(proto, x="protocol_type", color="anomaly", barmode="group")
+            fig1 = px.bar(proto, x="protocol_type", color="anomaly", barmode="group",
+                          labels={"anomaly":"0=Normal,1=Attack"})
             st.plotly_chart(fig1, use_container_width=True)
 
         st.subheader("Numeric Correlations")
@@ -193,100 +188,73 @@ with tabs[2]:
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
     if choice=="Isolation Forest":
-        st.write("Global SHAP importances for IForest.")
+        st.write("Global SHAP importances for Isolation Forest decisions.")
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
-        fig = px.bar(shap_df, x="importance", y="feature", orientation="h")
-        fig.update_layout(yaxis_categoryorder="total ascending",plot_bgcolor="white")
+        fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
+                     labels={"importance":"Mean |SHAP value|"})
+        fig.update_layout(yaxis_categoryorder="total ascending", plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
+
     elif choice=="Autoencoder":
-        st.write("Top AE reconstruction-error features.")
+        st.write("Top features by autoencoder reconstruction error.")
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
         rec= ae_model.predict(X)
         errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
         top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
-        fig = px.bar(top, x="error", y="feature", orientation="h")
+        fig = px.bar(top, x="error", y="feature", orientation="h",
+                     labels={"error":"Reconstruction MSE"})
         st.plotly_chart(fig, use_container_width=True)
+
     else:
-        st.write("LOF score distribution (lower=more anomalous).")
+        st.write("LOF ‘normality’ score distribution (lower = more anomalous).")
+        df     = st.session_state["last_df"]
+        X      = scaler.transform(df[train_cols].values)
+        scores = lof_scores(X)
+        fig    = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
+        st.plotly_chart(fig, use_container_width=True)
+
+# ─── Tab 4: Embedding ────────────────────────────────────────────────────────────
+with tabs[3]:
+    st.header("🔬 PCA Embedding of Network Traffic")
+    if "last_df" not in st.session_state:
+        st.info("Upload & predict to see embedding.")
+    else:
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
-        scores = lof_scores(X)
-        fig = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
+
+        # sample for speed
+        n = min(len(X), 5000)
+        idxs = np.random.choice(len(X), n, replace=False)
+        Xs = X[idxs]
+        dfs = df.iloc[idxs].copy()
+
+        # choose 2D vs 3D
+        dim = st.radio("Projection dimension:", ("2D", "3D"))
+        if dim == "2D":
+            pca = PCA(n_components=2)
+            coords = pca.fit_transform(Xs)
+            dfs["PC1"], dfs["PC2"] = coords[:,0], coords[:,1]
+
+            st.write("2-D PCA: Normal in blue, anomalies in red.")
+            fig = px.scatter(
+                dfs, x="PC1", y="PC2",
+                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
+                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2"},
+                title="PCA Projection (2D)"
+            )
+        else:
+            pca = PCA(n_components=3)
+            coords = pca.fit_transform(Xs)
+            dfs["PC1"], dfs["PC2"], dfs["PC3"] = coords[:,0], coords[:,1], coords[:,2]
+
+            st.write("3-D PCA: drag to rotate view.")
+            fig = px.scatter_3d(
+                dfs, x="PC1", y="PC2", z="PC3",
+                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
+                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2","PC3":"PC3"},
+                title="PCA Projection (3D)"
+            )
+
+        fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
         st.plotly_chart(fig, use_container_width=True)
-
-# ─── Tab 4: Performance ──────────────────────────────────────────────────────────
-with tabs[3]:
-    st.header("📈 Model Performance")
-    if "last_df" not in st.session_state or "attack_type" not in st.session_state["last_df"].columns:
-        st.info("To see performance, upload a CSV with an `attack_type` column.")
-    else:
-        df_perf = st.session_state["last_df"]
-        y_true  = df_perf["attack_type"].values
-        X       = scaler.transform(df_perf[train_cols].values)
-        ae_thresh = st.session_state.get("ae_thresh", 0.02)
-
-        eval_models = st.multiselect(
-            "Select models to compare:",
-            ["Isolation Forest","Autoencoder","Local Outlier Factor",
-             "Hybrid – Union","Hybrid – Intersection"],
-            default=["Isolation Forest"]
-        )
-
-        metrics = []
-        roc_data = {}
-        cms = {}
-
-        for m in eval_models:
-            if m=="Isolation Forest":
-                y_pred = predict_iso(X)
-                scores = iso_model.decision_function(X) * -1
-            elif m=="Autoencoder":
-                scores, y_pred = predict_ae(X, ae_thresh)
-            elif m=="Local Outlier Factor":
-                y_pred = predict_lof(X)
-                scores = lof_scores(X) * -1
-            elif m=="Hybrid – Union":
-                iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-                y_pred = np.logical_or(iso_p,ae_p).astype(int)
-                scores = iso_model.decision_function(X)*-1
-            else:
-                iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-                y_pred = np.logical_and(iso_p,ae_p).astype(int)
-                scores = iso_model.decision_function(X)*-1
-
-            cm      = confusion_matrix(y_true, y_pred)
-            rpt     = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
-            fpr,tpr,_ = roc_curve(y_true, scores)
-            roc_auc = auc(fpr, tpr)
-
-            metrics.append({
-                "Model": m,
-                "Accuracy": rpt["accuracy"],
-                "Precision(1)": rpt["1"]["precision"],
-                "Recall(1)":    rpt["1"]["recall"],
-                "F1(1)":        rpt["1"]["f1-score"],
-                "ROC AUC":      roc_auc
-            })
-            roc_data[m] = (fpr,tpr)
-            cms[m]      = cm
-
-        perf_df = pd.DataFrame(metrics).set_index("Model")
-        st.subheader("▶️ Summary Metrics")
-        st.dataframe(perf_df.style.format("{:.3f}"))
-
-        for m, cm in cms.items():
-            st.subheader(f"Confusion Matrix — {m}")
-            fig, ax = plt.subplots()
-            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
-            ax.set_xlabel("Predicted"); ax.set_ylabel("True")
-            st.pyplot(fig)
-
-        st.subheader("📊 ROC Curves")
-        fig, ax = plt.subplots()
-        for m,(fpr,tpr) in roc_data.items():
-            ax.plot(fpr, tpr, label=f"{m} (AUC={perf_df.loc[m,'ROC AUC']:.2f})")
-        ax.plot([0,1],[0,1],"k--",alpha=0.3)
-        ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate")
-        ax.legend(loc="lower right")
-        st.pyplot(fig)
