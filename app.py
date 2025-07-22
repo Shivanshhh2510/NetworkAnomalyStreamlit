@@ -24,8 +24,7 @@ def load_artifacts():
 iso_model, ae_model, lof_model, scaler, train_cols, iso_shap_imp = load_artifacts()
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
-def preprocess_raw_kdd(path_or_buf):
-    # Column names for KDD-Cup 10% data
+def preprocess_raw_kdd(buf):
     cols = [
         "duration","protocol_type","service","flag","src_bytes","dst_bytes","land",
         "wrong_fragment","urgent","hot","num_failed_logins","logged_in","num_compromised",
@@ -39,118 +38,116 @@ def preprocess_raw_kdd(path_or_buf):
         "dst_host_srv_serror_rate","dst_host_rerror_rate","dst_host_srv_rerror_rate",
         "label"
     ]
-    df = pd.read_csv(path_or_buf, names=cols)
-    # Drop original label & constant outbound cmd
+    df = pd.read_csv(buf, names=cols)
     df["attack_type"] = (df["label"] != "normal.").astype(int)
     df = df.drop(columns=["label","attack_type","num_outbound_cmds"])
-    # One-hot encode
     df = pd.get_dummies(df, columns=["protocol_type","service","flag"])
-    # Align to training columns
     for c in train_cols:
         if c not in df.columns:
             df[c] = 0
-    df = df[train_cols]
-    return df
+    return df[train_cols]
 
 def predict_iso(X):
     p = iso_model.predict(X)
-    return np.where(p==1, 0, 1)
+    return np.where(p == 1, 0, 1)
 
 def predict_ae(X, thresh):
     rec = ae_model.predict(X)
-    mse = np.mean((X-rec)**2, axis=1)
-    preds = np.where(mse>thresh, 1, 0)
+    mse = np.mean((X - rec) ** 2, axis=1)
+    preds = np.where(mse > thresh, 1, 0)
     return mse, preds
 
 def predict_lof(X):
     p = lof_model.predict(X)
-    return np.where(p==1, 0, 1)
+    return np.where(p == 1, 0, 1)
 
 # ─── UI ───────────────────────────────────────────────────────────────────────────
 tabs = st.tabs(["🔍 Predict", "📊 EDA", "🧠 Explain"])
 
-# ─── Predict Tab ─────────────────────────────────────────────────────────────────
+# ─── Tab 1: Predict ───────────────────────────────────────────────────────────────
 with tabs[0]:
     st.sidebar.header("Settings")
-    # Contamination & threshold controls
-    iso_cont = st.sidebar.slider("IsolationForest contamination", 0.01, 0.5, 0.1, 0.01)
-    lof_cont = st.sidebar.slider("LOF contamination",          0.01, 0.5, 0.02, 0.01)
-    ae_thresh= st.sidebar.slider("Autoencoder threshold",    0.0, 1.0, 0.02, 0.005)
-    # Model choice
+    upload_type = st.sidebar.radio(
+        "Upload type:",
+        ("Raw KDD data", "Preprocessed CSV")
+    )
+    iso_cont = st.sidebar.slider("IForest contamination", 0.01, 0.5, 0.1, 0.01)
+    lof_cont = st.sidebar.slider("LOF contamination",    0.01, 0.5, 0.02, 0.01)
+    ae_thresh= st.sidebar.slider("AE threshold",        0.0, 1.0, 0.02, 0.005)
     model_choice = st.sidebar.selectbox(
         "Model:",
-        ["Isolation Forest", "Autoencoder", "Local Outlier Factor",
-         "Hybrid – Union", "Hybrid – Intersection"]
+        ["Isolation Forest","Autoencoder","Local Outlier Factor",
+         "Hybrid – Union","Hybrid – Intersection"]
     )
 
     st.title("🚨 Network Traffic Anomaly Detection")
-    st.write("**No upload needed**: app will run on the default KDD-Cup data. Or upload your own preprocessed CSV below.")
-
     uploaded = st.file_uploader(
-        "Upload preprocessed CSV (optional)", type=["csv"]
+        "Upload your dataset",
+        type=None,
+        help="Either raw KDD data file or a preprocessed CSV"
     )
-
-    # 1) Load & preprocess data
-    if uploaded:
-        df = pd.read_csv(uploaded)
-        X = df.reindex(columns=train_cols).fillna(0).values
+    if not uploaded:
+        st.info("Please upload your dataset to begin.")
     else:
-        df_proc = preprocess_raw_kdd("kddcup.data_10_percent")
-        X = scaler.transform(df_proc.values)
-        df = df_proc.copy()
+        # 1) Preprocess
+        if upload_type == "Raw KDD data":
+            df_proc = preprocess_raw_kdd(uploaded)
+            X = scaler.transform(df_proc.values)
+            df = df_proc.copy()
+        else:
+            df = pd.read_csv(uploaded)
+            X = df.reindex(columns=train_cols).fillna(0).values
 
-    # 2) Refit models with dynamic contamination (on training set proxies!)
-    iso_model.set_params(contamination=iso_cont)
-    iso_model.fit(X)   # you may skip retraining if unnecessary
+        # 2) Optionally refit with new contamination
+        iso_model.set_params(contamination=iso_cont)
+        iso_model.fit(X)
+        lof_model.set_params(contamination=lof_cont)
+        lof_model.fit(X)
 
-    lof_model.set_params(contamination=lof_cont)
-    lof_model.fit(X)
+        # 3) Predict
+        if model_choice == "Isolation Forest":
+            preds = predict_iso(X)
+        elif model_choice == "Autoencoder":
+            mse, preds = predict_ae(X, ae_thresh)
+        elif model_choice == "Local Outlier Factor":
+            preds = predict_lof(X)
+        elif model_choice == "Hybrid – Union":
+            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
+            preds = np.logical_or(iso_p, ae_p).astype(int)
+        else:
+            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
+            preds = np.logical_and(iso_p, ae_p).astype(int)
 
-    # 3) Predict
-    if model_choice == "Isolation Forest":
-        preds = predict_iso(X)
-    elif model_choice == "Autoencoder":
-        mse, preds = predict_ae(X, ae_thresh)
-    elif model_choice == "Local Outlier Factor":
-        preds = predict_lof(X)
-    elif model_choice == "Hybrid – Union":
-        iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-        preds = np.logical_or(iso_p, ae_p).astype(int)
-    else:  # Intersection
-        iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-        preds = np.logical_and(iso_p, ae_p).astype(int)
+        # 4) Display
+        df["anomaly"] = preds
+        st.subheader("Sample Results")
+        st.dataframe(df.head(10))
 
-    # 4) Display results
-    df["anomaly"] = preds
-    st.subheader("Sample Results")
-    st.dataframe(df.head(10))
+        if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
+            rec = ae_model.predict(X)
+            feat_err = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
+            st.subheader("Top AE Reconstruction-Error Features")
+            st.bar_chart(feat_err.nlargest(10))
 
-    # AE feature-error explain
-    if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
-        rec = ae_model.predict(X)
-        feat_err = pd.Series(np.mean((X-rec)**2, axis=0), index=train_cols)
-        st.subheader("Top AE Reconstruction-Error Features")
-        st.bar_chart(feat_err.nlargest(10))
+        st.subheader("Anomaly Distribution")
+        dist = df["anomaly"].map({0:"Normal",1:"Attack"}).value_counts()
+        st.bar_chart(dist)
 
-    st.subheader("Anomaly Distribution")
-    dist = df["anomaly"].map({0:"Normal",1:"Attack"}).value_counts()
-    st.bar_chart(dist)
+        csv = df.to_csv(index=False).encode()
+        st.download_button("⬇️ Download Results", csv, "results.csv", "text/csv")
 
-    # Download
-    csv = df.to_csv(index=False).encode()
-    st.download_button("⬇️ Download Results", csv, "results.csv", "text/csv")
-
-# ─── EDA Tab ────────────────────────────────────────────────────────────────────
+# ─── Tab 2: EDA ──────────────────────────────────────────────────────────────────
 with tabs[1]:
     st.header("📊 Quick EDA")
-    st.write("Sample of the data and basic histograms.")
     if 'df' in locals():
         st.dataframe(df.sample(50))
         for col in ["count","srv_count"]:
             fig = px.histogram(df, x=col, color="anomaly", barmode="overlay", nbins=50)
             st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Upload data to see EDA.")
 
-# ─── Explain Tab ───────────────────────────────────────────────────────────────
+# ─── Tab 3: Explain ─────────────────────────────────────────────────────────────
 with tabs[2]:
     st.header("🧠 Explainability")
     st.markdown("**Global SHAP Importances** for Isolation Forest")
