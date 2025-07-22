@@ -1,0 +1,11 @@
+,importance
+srv_count,1.0630766272305914
+count,0.8648053658034361
+dst_host_same_src_port_rate,0.7680599445117671
+logged_in,0.6268637824010967
+service_eco_i,0.4834990474404232
+protocol_type_icmp,0.42930937212339665
+dst_host_serror_rate,0.3922303433001036
+dst_host_srv_serror_rate,0.386784456479916
+service_hostnames,0.3307626447451962
+srv_serror_rate,0.32257851449817776
