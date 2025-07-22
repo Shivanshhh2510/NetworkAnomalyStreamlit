@@ -7,6 +7,12 @@ from tensorflow.keras.models import load_model
 import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
+from sklearn.metrics import (
+    confusion_matrix,
+    classification_report,
+    roc_curve,
+    auc
+)
 
 st.set_page_config(page_title="Network Traffic Anomaly Detection", layout="wide")
 
@@ -23,37 +29,6 @@ def load_artifacts():
 
 iso_model, ae_model, lof_model, scaler, train_cols, iso_shap_imp = load_artifacts()
 
-# ─── Feedback Persistence ────────────────────────────────────────────────────────
-FEEDBACK_FILE = "feedback.csv"
-
-@st.cache_resource
-def load_feedback():
-    if os.path.exists(FEEDBACK_FILE):
-        return pd.read_csv(FEEDBACK_FILE)
-    else:
-        return pd.DataFrame(columns=[
-            "session","index","model","pred_label","true_label","count","srv_count"
-        ])
-
-feedback_df = load_feedback()
-
-def save_feedback(session, idx, model, pred_label, true_label, count, srv_count):
-    row = {
-        "session": session,
-        "index": idx,
-        "model": model,
-        "pred_label": pred_label,
-        "true_label": true_label,
-        "count": count,
-        "srv_count": srv_count
-    }
-    df_row = pd.DataFrame([row])
-    if os.path.exists(FEEDBACK_FILE):
-        df_row.to_csv(FEEDBACK_FILE, mode="a", header=False, index=False)
-    else:
-        df_row.to_csv(FEEDBACK_FILE, index=False)
-    return pd.read_csv(FEEDBACK_FILE)
-
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
 def detect_compression(buf):
     name = getattr(buf, "name", "").lower()
@@ -63,7 +38,6 @@ def detect_compression(buf):
 
 @st.cache_data(show_spinner=False, max_entries=1)
 def preprocess_raw_kdd(buf, nrows):
-    # read raw, keep protocol_type + two numeric cols
     cols = [
         "duration","protocol_type","service","flag","src_bytes","dst_bytes","land",
         "wrong_fragment","urgent","hot","num_failed_logins","logged_in","num_compromised",
@@ -80,9 +54,7 @@ def preprocess_raw_kdd(buf, nrows):
     comp = detect_compression(buf)
     raw = pd.read_csv(buf, names=cols, nrows=nrows, compression=comp)
     raw["attack_type"] = (raw["label"] != "normal.").astype(int)
-    # extract meta for EDA
     raw_meta = raw[["protocol_type","count","srv_count"]].copy()
-    # prepare for modeling
     df = raw.drop(columns=["label","attack_type","num_outbound_cmds"])
     df = pd.get_dummies(df, columns=["protocol_type","service","flag"])
     for c in train_cols:
@@ -91,21 +63,23 @@ def preprocess_raw_kdd(buf, nrows):
     return df[train_cols], raw_meta
 
 def predict_iso(X):
-    p = iso_model.predict(X); return np.where(p==1,0,1)
+    p = iso_model.predict(X)
+    return np.where(p == 1, 0, 1)
 
 def predict_ae(X, thresh):
     rec = ae_model.predict(X)
-    mse = np.mean((X-rec)**2, axis=1)
-    return mse, np.where(mse>thresh,1,0)
+    mse = np.mean((X - rec) ** 2, axis=1)
+    return mse, np.where(mse > thresh, 1, 0)
 
 def predict_lof(X):
-    p = lof_model.predict(X); return np.where(p==1,0,1)
+    p = lof_model.predict(X)
+    return np.where(p == 1, 0, 1)
 
-def predict_lof_scores(X):
+def lof_scores(X):
     return lof_model.decision_function(X)
 
 # ─── UI ───────────────────────────────────────────────────────────────────────────
-tabs = st.tabs(["🔍 Predict", "📊 EDA", "🧠 Explain", "🔄 Feedback"])
+tabs = st.tabs(["🔍 Predict", "📊 EDA", "🧠 Explain", "📈 Performance"])
 
 # ─── Tab 1: Predict ───────────────────────────────────────────────────────────────
 with tabs[0]:
@@ -121,13 +95,17 @@ with tabs[0]:
     ])
 
     st.title("🚨 Network Traffic Anomaly Detection")
-    uploaded = st.file_uploader("Upload dataset", type=["csv","gz","zip"],
-                                help="Raw KDD (.csv/.gz/.zip) or preprocessed CSV")
+    uploaded = st.file_uploader(
+        "Upload dataset",
+        type=["csv","gz","zip"],
+        help="Raw KDD (.csv/.gz/.zip) or preprocessed CSV"
+    )
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
+        # 1) Preprocess
         if upload_type=="Raw KDD data":
-            st.warning(f"Processing first {sample_rows:,} rows of raw upload…")
+            st.warning(f"Processing first {sample_rows:,} rows…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
@@ -138,11 +116,11 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state["last_meta"] = None
 
-        # retrain models
+        # 2) Optional re-fit
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
-        # predict
+        # 3) Predict
         if model_choice=="Isolation Forest":
             preds = predict_iso(X)
         elif model_choice=="Autoencoder":
@@ -159,19 +137,19 @@ with tabs[0]:
         df["anomaly"] = preds
         st.session_state["last_df"]    = df
         st.session_state["last_model"] = model_choice
+        st.session_state["ae_thresh"]  = ae_thresh
 
+        # Display results
         st.subheader("Sample Results")
         st.dataframe(df.head(10))
 
         if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
             rec      = ae_model.predict(X)
             feat_err = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
-            st.subheader("Top 10 AE Reconstruction-Error Features")
-            st.write("Features the autoencoder struggles with most.")
+            st.subheader("Top AE Reconstruction Errors")
             st.bar_chart(feat_err.nlargest(10))
 
         st.subheader("Anomaly Distribution")
-        st.write("Count of normal vs. attack instances in this sample.")
         st.bar_chart(df["anomaly"].map({0:"Normal",1:"Attack"}).value_counts())
 
         csv = df.to_csv(index=False).encode()
@@ -183,22 +161,17 @@ with tabs[1]:
     if "last_df" not in st.session_state:
         st.info("Upload & predict to see EDA.")
     else:
-        df        = st.session_state["last_df"]
-        raw_meta  = st.session_state["last_meta"]
+        df       = st.session_state["last_df"]
+        raw_meta = st.session_state["last_meta"]
 
         if raw_meta is not None:
-            st.subheader("Protocol Type Breakdown")
-            st.write("Which network protocols appear more often in anomalies vs normal.")
-            proto_df = raw_meta.copy()
-            proto_df["anomaly"] = df["anomaly"].map({0:"Normal",1:"Attack"})
-            fig1 = px.bar(
-                proto_df, x="protocol_type", color="anomaly",
-                barmode="group", labels={"anomaly":"0=Normal,1=Attack"}
-            )
+            st.subheader("Protocol Breakdown")
+            proto = raw_meta.copy()
+            proto["anomaly"] = df["anomaly"].map({0:"Normal",1:"Attack"})
+            fig1 = px.bar(proto, x="protocol_type", color="anomaly", barmode="group")
             st.plotly_chart(fig1, use_container_width=True)
 
-        st.subheader("Feature Correlation Heatmap")
-        st.write("How key numeric features correlate with each other.")
+        st.subheader("Numeric Correlations")
         num_cols = ["duration","src_bytes","dst_bytes","count","srv_count"]
         corr = df[num_cols].corr()
         fig2, ax = plt.subplots(figsize=(6,5))
@@ -206,8 +179,7 @@ with tabs[1]:
         st.pyplot(fig2)
 
         st.subheader("Data Distributions")
-        st.write("Boxplots compare src_bytes and dst_bytes for anomalies vs normal.")
-        fig3, axes = plt.subplots(1,2, figsize=(12,4))
+        fig3, axes = plt.subplots(1,2,figsize=(12,4))
         sns.boxplot(x=df["anomaly"], y=df["src_bytes"], ax=axes[0])
         axes[0].set_title("src_bytes")
         sns.boxplot(x=df["anomaly"], y=df["dst_bytes"], ax=axes[1])
@@ -217,81 +189,104 @@ with tabs[1]:
 # ─── Tab 3: Explain ─────────────────────────────────────────────────────────────
 with tabs[2]:
     st.header("🧠 Explainability")
-    choice = st.selectbox("Explain model:", [
+    choice = st.selectbox("Explain model:",[
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
     if choice=="Isolation Forest":
-        st.write("Global SHAP importances for Isolation Forest decisions.")
-        df_shap = iso_shap_imp.reset_index().rename(
-            columns={"index":"feature",0:"importance"}
-        )
-        fig = px.bar(
-            df_shap, x="importance", y="feature", orientation="h",
-            labels={"importance":"Mean |SHAP value|"}
-        )
-        fig.update_layout(yaxis_categoryorder="total ascending",
-                          plot_bgcolor="white")
+        st.write("Global SHAP importances for IForest.")
+        shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
+        fig = px.bar(shap_df, x="importance", y="feature", orientation="h")
+        fig.update_layout(yaxis_categoryorder="total ascending",plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
-
     elif choice=="Autoencoder":
-        st.write("Top features by autoencoder reconstruction error.")
+        st.write("Top AE reconstruction-error features.")
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
         rec= ae_model.predict(X)
-        feat_err = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
-        df_err = feat_err.nlargest(10).reset_index().rename(
-            columns={"index":"feature",0:"error"}
-        )
-        fig = px.bar(df_err, x="error", y="feature", orientation="h",
-                     labels={"error":"Reconstruction MSE"})
-        fig.update_layout(yaxis_categoryorder="total ascending")
+        errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
+        top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
+        fig = px.bar(top, x="error", y="feature", orientation="h")
         st.plotly_chart(fig, use_container_width=True)
-
     else:
-        st.write("LOF ‘normality’ score distribution (lower = more anomalous).")
-        df     = st.session_state["last_df"]
-        X      = scaler.transform(df[train_cols].values)
-        scores = predict_lof_scores(X)
-        fig    = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
+        st.write("LOF score distribution (lower=more anomalous).")
+        df = st.session_state["last_df"]
+        X  = scaler.transform(df[train_cols].values)
+        scores = lof_scores(X)
+        fig = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         st.plotly_chart(fig, use_container_width=True)
 
-# ─── Tab 4: Feedback & Drift ─────────────────────────────────────────────────────
+# ─── Tab 4: Performance ──────────────────────────────────────────────────────────
 with tabs[3]:
-    st.header("🔄 Feedback & Drift Monitoring")
-    if "last_df" not in st.session_state:
-        st.info("Run a prediction first to collect feedback.")
+    st.header("📈 Model Performance")
+    if "last_df" not in st.session_state or "attack_type" not in st.session_state["last_df"].columns:
+        st.info("To see performance, upload a CSV with an `attack_type` column.")
     else:
-        df_last    = st.session_state["last_df"]
-        raw_meta   = st.session_state["last_meta"]
-        model_last = st.session_state["last_model"]
+        df_perf = st.session_state["last_df"]
+        y_true  = df_perf["attack_type"].values
+        X       = scaler.transform(df_perf[train_cols].values)
+        ae_thresh = st.session_state.get("ae_thresh", 0.02)
 
-        st.subheader("Label a Sample")
-        idx        = st.number_input("Row index", 0, len(df_last)-1, 0)
-        true_label = st.radio("True Label:", ["Normal","Attack"])
-        if st.button("Submit Feedback"):
-            pred_label = "Attack" if df_last.loc[idx,"anomaly"]==1 else "Normal"
-            session_id = int(pd.Timestamp.now().timestamp())
-            save_feedback(
-                session_id,
-                idx,
-                model_last,
-                pred_label,
-                true_label,
-                int(raw_meta.loc[idx,"count"]) if raw_meta is not None else -1,
-                int(raw_meta.loc[idx,"srv_count"]) if raw_meta is not None else -1
-            )
-            st.success("Feedback saved!")
-        st.subheader("Collected Feedback")
-        fb = load_feedback()
-        st.dataframe(fb)
+        eval_models = st.multiselect(
+            "Select models to compare:",
+            ["Isolation Forest","Autoencoder","Local Outlier Factor",
+             "Hybrid – Union","Hybrid – Intersection"],
+            default=["Isolation Forest"]
+        )
 
-        if not fb.empty:
-            st.subheader("Drift on 'count'")
-            fig_f = px.histogram(
-                fb,
-                x="count",
-                color="true_label",
-                barmode="overlay",
-                labels={"true_label":"True Label"}
-            )
-            st.plotly_chart(fig_f, use_container_width=True)
+        metrics = []
+        roc_data = {}
+        cms = {}
+
+        for m in eval_models:
+            if m=="Isolation Forest":
+                y_pred = predict_iso(X)
+                scores = iso_model.decision_function(X) * -1
+            elif m=="Autoencoder":
+                scores, y_pred = predict_ae(X, ae_thresh)
+            elif m=="Local Outlier Factor":
+                y_pred = predict_lof(X)
+                scores = lof_scores(X) * -1
+            elif m=="Hybrid – Union":
+                iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
+                y_pred = np.logical_or(iso_p,ae_p).astype(int)
+                scores = iso_model.decision_function(X)*-1
+            else:
+                iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
+                y_pred = np.logical_and(iso_p,ae_p).astype(int)
+                scores = iso_model.decision_function(X)*-1
+
+            cm      = confusion_matrix(y_true, y_pred)
+            rpt     = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
+            fpr,tpr,_ = roc_curve(y_true, scores)
+            roc_auc = auc(fpr, tpr)
+
+            metrics.append({
+                "Model": m,
+                "Accuracy": rpt["accuracy"],
+                "Precision(1)": rpt["1"]["precision"],
+                "Recall(1)":    rpt["1"]["recall"],
+                "F1(1)":        rpt["1"]["f1-score"],
+                "ROC AUC":      roc_auc
+            })
+            roc_data[m] = (fpr,tpr)
+            cms[m]      = cm
+
+        perf_df = pd.DataFrame(metrics).set_index("Model")
+        st.subheader("▶️ Summary Metrics")
+        st.dataframe(perf_df.style.format("{:.3f}"))
+
+        for m, cm in cms.items():
+            st.subheader(f"Confusion Matrix — {m}")
+            fig, ax = plt.subplots()
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
+            ax.set_xlabel("Predicted"); ax.set_ylabel("True")
+            st.pyplot(fig)
+
+        st.subheader("📊 ROC Curves")
+        fig, ax = plt.subplots()
+        for m,(fpr,tpr) in roc_data.items():
+            ax.plot(fpr, tpr, label=f"{m} (AUC={perf_df.loc[m,'ROC AUC']:.2f})")
+        ax.plot([0,1],[0,1],"k--",alpha=0.3)
+        ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate")
+        ax.legend(loc="lower right")
+        st.pyplot(fig)
