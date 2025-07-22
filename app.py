@@ -24,9 +24,17 @@ def load_artifacts():
 iso_model, ae_model, lof_model, scaler, train_cols, iso_shap_imp = load_artifacts()
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
+def detect_compression(buf):
+    name = getattr(buf, "name", "")
+    name = name.lower()
+    if name.endswith((".gz", ".gzip")):
+        return "gzip"
+    if name.endswith(".zip"):
+        return "zip"
+    return None
+
 @st.cache_data(show_spinner=False, max_entries=1)
 def preprocess_raw_kdd(buf, nrows):
-    # column names for KDD-Cup data
     cols = [
         "duration","protocol_type","service","flag","src_bytes","dst_bytes","land",
         "wrong_fragment","urgent","hot","num_failed_logins","logged_in","num_compromised",
@@ -40,12 +48,8 @@ def preprocess_raw_kdd(buf, nrows):
         "dst_host_srv_serror_rate","dst_host_rerror_rate","dst_host_srv_rerror_rate",
         "label"
     ]
-    df = pd.read_csv(
-        buf,
-        names=cols,
-        nrows=nrows,
-        compression='infer'       # ← auto‐detect .gz, .zip, or plain CSV
-    )
+    comp = detect_compression(buf)
+    df = pd.read_csv(buf, names=cols, nrows=nrows, compression=comp)
     df["attack_type"] = (df["label"] != "normal.").astype(int)
     df = df.drop(columns=["label","attack_type","num_outbound_cmds"])
     df = pd.get_dummies(df, columns=["protocol_type","service","flag"])
@@ -96,7 +100,7 @@ with tabs[0]:
     uploaded = st.file_uploader(
         "Upload your dataset",
         type=["csv","gz","zip"],
-        help="Either raw KDD data (.csv/.gz/.zip) or a preprocessed CSV"
+        help="Raw KDD data (.csv/.gz/.zip) or a preprocessed CSV"
     )
     if not uploaded:
         st.info("Please upload your dataset to begin.")
@@ -108,7 +112,8 @@ with tabs[0]:
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
         else:
-            df = pd.read_csv(uploaded)
+            comp = detect_compression(uploaded)
+            df = pd.read_csv(uploaded, compression=comp)
             X = df.reindex(columns=train_cols).fillna(0).values
 
         # 2) Optionally refit with new contamination
