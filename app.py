@@ -14,7 +14,8 @@ st.set_page_config(
 @st.cache_resource
 def load_artifacts():
     iso = joblib.load("iso_model.pkl")
-    ae  = load_model("autoencoder_model.h5")
+    # Load autoencoder without recompiling (avoids needing the 'mse' loss fn)
+    ae  = load_model("autoencoder_model.h5", compile=False)
     lof = joblib.load("lof_model.pkl")
     scaler = joblib.load("scaler.pkl")
     cols = joblib.load("train_cols.pkl")
