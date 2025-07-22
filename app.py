@@ -40,7 +40,12 @@ def preprocess_raw_kdd(buf, nrows):
         "dst_host_srv_serror_rate","dst_host_rerror_rate","dst_host_srv_rerror_rate",
         "label"
     ]
-    df = pd.read_csv(buf, names=cols, nrows=nrows)
+    df = pd.read_csv(
+        buf,
+        names=cols,
+        nrows=nrows,
+        compression='infer'       # ← auto‐detect .gz, .zip, or plain CSV
+    )
     df["attack_type"] = (df["label"] != "normal.").astype(int)
     df = df.drop(columns=["label","attack_type","num_outbound_cmds"])
     df = pd.get_dummies(df, columns=["protocol_type","service","flag"])
@@ -73,7 +78,6 @@ with tabs[0]:
         "Upload type:",
         ("Raw KDD data", "Preprocessed CSV")
     )
-    # NEW: sample size for raw uploads
     sample_rows = st.sidebar.slider(
         "Rows to sample from raw file",
         min_value=10000, max_value=200000,
@@ -91,8 +95,8 @@ with tabs[0]:
     st.title("🚨 Network Traffic Anomaly Detection")
     uploaded = st.file_uploader(
         "Upload your dataset",
-        type=["csv"],
-        help="Either raw KDD data file or a preprocessed CSV"
+        type=["csv","gz","zip"],
+        help="Either raw KDD data (.csv/.gz/.zip) or a preprocessed CSV"
     )
     if not uploaded:
         st.info("Please upload your dataset to begin.")
@@ -143,7 +147,12 @@ with tabs[0]:
         st.bar_chart(dist)
 
         csv = df.to_csv(index=False).encode()
-        st.download_button("⬇️ Download Results", csv, "anomaly_results.csv", "text/csv")
+        st.download_button(
+            "⬇️ Download Results",
+            csv,
+            "anomaly_results.csv",
+            "text/csv"
+        )
 
 # ─── Tab 2: EDA ──────────────────────────────────────────────────────────────────
 with tabs[1]:
