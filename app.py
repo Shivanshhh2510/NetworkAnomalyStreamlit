@@ -1,4 +1,7 @@
 import os
+import json
+import datetime
+import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,6 +11,14 @@ import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+from sklearn.metrics import (
+    precision_recall_curve,
+    roc_curve,
+    auc as calc_auc,
+    precision_score,
+    recall_score,
+    f1_score
+)
 
 st.set_page_config(page_title="Network Traffic Anomaly Detection", layout="wide")
 
@@ -23,6 +34,39 @@ def load_artifacts():
     return iso, ae, lof, scaler, train_cols, iso_shap
 
 iso_model, ae_model, lof_model, scaler, train_cols, iso_shap_imp = load_artifacts()
+
+# ─── Incident Logging ────────────────────────────────────────────────────────────
+INCIDENT_FILE = "incidents.json"
+def load_incidents():
+    if os.path.exists(INCIDENT_FILE):
+        with open(INCIDENT_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def log_incident(model, count, top_samples):
+    incident = {
+        "timestamp": datetime.datetime.utcnow().isoformat()+"Z",
+        "model": model,
+        "anomaly_count": int(count),
+        "top_samples": top_samples.to_dict(orient="records")
+    }
+    incidents = load_incidents()
+    incidents.append(incident)
+    with open(INCIDENT_FILE, "w") as f:
+        json.dump(incidents, f, indent=2)
+    return incident
+
+def send_slack_alert(webhook_url, incident):
+    text = (
+        f"*Anomaly Alert* ({incident['model']})\n"
+        f"> Time: {incident['timestamp']}\n"
+        f"> Count: {incident['anomaly_count']}\n"
+        f"> Top sample: {incident['top_samples'][0]}"
+    )
+    try:
+        requests.post(webhook_url, json={"text": text}, timeout=3)
+    except Exception:
+        pass
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
 def detect_compression(buf):
@@ -57,24 +101,39 @@ def preprocess_raw_kdd(buf, nrows):
             df[c] = 0
     return df[train_cols], raw_meta
 
-def predict_iso(X):
+def predict_iso(X, contamination=None):
+    if contamination is not None:
+        iso_model.set_params(contamination=contamination)
+        iso_model.fit(X)
     p = iso_model.predict(X)
-    return np.where(p == 1, 0, 1)
+    return np.where(p == 1, 0, 1), iso_model.decision_function(X) * -1
 
-def predict_ae(X, thresh):
+def predict_ae(X, thresh=None):
+    if thresh is None:
+        thresh = st.session_state.get("ae_thresh", 0.02)
     rec = ae_model.predict(X)
     mse = np.mean((X - rec) ** 2, axis=1)
-    return mse, np.where(mse > thresh, 1, 0)
+    return np.where(mse > thresh, 1, 0), mse
 
-def predict_lof(X):
+def predict_lof(X, contamination=None, n_neighbors=None):
+    if contamination is not None or n_neighbors is not None:
+        lof_model.set_params(
+            contamination=contamination or lof_model.contamination,
+            n_neighbors=n_neighbors or lof_model.n_neighbors
+        )
+        lof_model.fit(X)
     p = lof_model.predict(X)
-    return np.where(p == 1, 0, 1)
-
-def lof_scores(X):
-    return lof_model.decision_function(X)
+    return np.where(p == 1, 0, 1), lof_model.decision_function(X) * -1
 
 # ─── UI ───────────────────────────────────────────────────────────────────────────
-tabs = st.tabs(["🔍 Predict", "📊 EDA", "🧠 Explain", "🔬 Embedding"])
+tabs = st.tabs([
+    "🔍 Predict",
+    "📊 EDA",
+    "🧠 Explain",
+    "🔬 Embedding",
+    "🚨 Incidents",
+    "🛠️ Tuning Lab"
+])
 
 # ─── Tab 1: Predict ───────────────────────────────────────────────────────────────
 with tabs[0]:
@@ -84,10 +143,13 @@ with tabs[0]:
     iso_cont     = st.sidebar.slider("IForest contamination",0.01,0.5,0.1,0.01)
     lof_cont     = st.sidebar.slider("LOF contamination",   0.01,0.5,0.02,0.01)
     ae_thresh    = st.sidebar.slider("AE threshold",       0.0,1.0,0.02,0.005)
+    alert_thresh = st.sidebar.number_input("Alert if ≥ anomalies", 1, 1000, 50, 1)
+    slack_url    = st.sidebar.text_input("Slack Webhook URL", type="password")
     model_choice = st.sidebar.selectbox("Model:",[
         "Isolation Forest","Autoencoder","Local Outlier Factor",
         "Hybrid – Union","Hybrid – Intersection"
     ])
+    st.session_state["ae_thresh"] = ae_thresh
 
     st.title("🚨 Network Traffic Anomaly Detection")
     uploaded = st.file_uploader(
@@ -97,9 +159,9 @@ with tabs[0]:
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
-        # 1) Preprocess
+        # preprocess
         if upload_type=="Raw KDD data":
-            st.warning(f"Processing first {sample_rows:,} rows of raw data…")
+            st.warning(f"Processing first {sample_rows:,} rows…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
@@ -110,37 +172,37 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state["last_meta"] = None
 
-        # 2) Optionally re-fit models
-        iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
-        lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
-
-        # 3) Predict
+        # predict
         if model_choice=="Isolation Forest":
-            preds = predict_iso(X)
+            preds, scores = predict_iso(X, contamination=iso_cont)
         elif model_choice=="Autoencoder":
-            mse, preds = predict_ae(X, ae_thresh)
+            preds, scores = predict_ae(X, thresh=ae_thresh)
         elif model_choice=="Local Outlier Factor":
-            preds = predict_lof(X)
+            preds, scores = predict_lof(X, contamination=lof_cont)
         elif model_choice=="Hybrid – Union":
-            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_or(iso_p, ae_p).astype(int)
+            iso_p, iso_s = predict_iso(X, contamination=iso_cont)
+            ae_p, ae_s   = predict_ae(X, thresh=ae_thresh)
+            preds        = np.logical_or(iso_p, ae_p).astype(int)
+            scores       = iso_s
         else:
-            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_and(iso_p, ae_p).astype(int)
+            iso_p, iso_s = predict_iso(X, contamination=iso_cont)
+            ae_p, ae_s   = predict_ae(X, thresh=ae_thresh)
+            preds        = np.logical_and(iso_p, ae_p).astype(int)
+            scores       = iso_s
 
         df["anomaly"] = preds
         st.session_state["last_df"]    = df
         st.session_state["last_model"] = model_choice
-        st.session_state["ae_thresh"]  = ae_thresh
+        st.session_state["last_scores"]= scores
 
-        # Display results
+        # display
         st.subheader("Sample Results")
         st.dataframe(df.head(10), use_container_width=True)
 
         if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
+            st.subheader("Top AE Reconstruction Errors")
             rec      = ae_model.predict(X)
             feat_err = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
-            st.subheader("Top AE Reconstruction Errors")
             st.bar_chart(feat_err.nlargest(10))
 
         st.subheader("Anomaly Distribution")
@@ -148,6 +210,14 @@ with tabs[0]:
 
         csv = df.to_csv(index=False).encode()
         st.download_button("⬇️ Download Results", csv, "results.csv", "text/csv")
+
+        # check for alert
+        total_anoms = int(preds.sum())
+        if total_anoms >= alert_thresh:
+            incident = log_incident(model_choice, total_anoms, df[preds==1].head(5))
+            st.error(f"🚨 Alert: {total_anoms} anomalies detected by {model_choice}")
+            if slack_url:
+                send_slack_alert(slack_url, incident)
 
 # ─── Tab 2: EDA ──────────────────────────────────────────────────────────────────
 with tabs[1]:
@@ -162,8 +232,7 @@ with tabs[1]:
             st.subheader("Protocol Breakdown")
             proto = raw_meta.copy()
             proto["anomaly"] = df["anomaly"].map({0:"Normal",1:"Attack"})
-            fig1 = px.bar(proto, x="protocol_type", color="anomaly", barmode="group",
-                          labels={"anomaly":"0=Normal,1=Attack"})
+            fig1 = px.bar(proto, x="protocol_type", color="anomaly", barmode="group")
             st.plotly_chart(fig1, use_container_width=True)
 
         st.subheader("Numeric Correlations")
@@ -188,29 +257,24 @@ with tabs[2]:
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
     if choice=="Isolation Forest":
-        st.write("Global SHAP importances for Isolation Forest decisions.")
+        st.write("Global SHAP importances for IForest.")
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
-        fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
-                     labels={"importance":"Mean |SHAP value|"})
-        fig.update_layout(yaxis_categoryorder="total ascending", plot_bgcolor="white")
+        fig = px.bar(shap_df, x="importance", y="feature", orientation="h")
+        fig.update_layout(yaxis_categoryorder="total ascending",plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
-
     elif choice=="Autoencoder":
-        st.write("Top features by autoencoder reconstruction error.")
+        st.write("Top AE reconstruction-error features.")
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
         rec= ae_model.predict(X)
         errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
         top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
-        fig = px.bar(top, x="error", y="feature", orientation="h",
-                     labels={"error":"Reconstruction MSE"})
+        fig = px.bar(top, x="error", y="feature", orientation="h")
         st.plotly_chart(fig, use_container_width=True)
-
     else:
-        st.write("LOF ‘normality’ score distribution (lower = more anomalous).")
+        st.write("LOF score distribution (lower=more anomalous).")
         df     = st.session_state["last_df"]
-        X      = scaler.transform(df[train_cols].values)
-        scores = lof_scores(X)
+        scores = st.session_state["last_scores"]
         fig    = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         st.plotly_chart(fig, use_container_width=True)
 
@@ -222,39 +286,92 @@ with tabs[3]:
     else:
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
-
-        # sample for speed
-        n = min(len(X), 5000)
+        n  = min(len(X), 5000)
         idxs = np.random.choice(len(X), n, replace=False)
         Xs = X[idxs]
-        dfs = df.iloc[idxs].copy()
+        dfs= df.iloc[idxs].copy()
 
-        # choose 2D vs 3D
-        dim = st.radio("Projection dimension:", ("2D", "3D"))
-        if dim == "2D":
+        dim = st.radio("Projection dimension:", ("2D","3D"))
+        if dim=="2D":
             pca = PCA(n_components=2)
             coords = pca.fit_transform(Xs)
             dfs["PC1"], dfs["PC2"] = coords[:,0], coords[:,1]
-
-            st.write("2-D PCA: Normal in blue, anomalies in red.")
-            fig = px.scatter(
-                dfs, x="PC1", y="PC2",
-                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2"},
-                title="PCA Projection (2D)"
-            )
+            fig = px.scatter(dfs, x="PC1", y="PC2",
+                             color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
+                             title="PCA (2D)")
         else:
             pca = PCA(n_components=3)
             coords = pca.fit_transform(Xs)
             dfs["PC1"], dfs["PC2"], dfs["PC3"] = coords[:,0], coords[:,1], coords[:,2]
-
-            st.write("3-D PCA: drag to rotate view.")
-            fig = px.scatter_3d(
-                dfs, x="PC1", y="PC2", z="PC3",
-                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2","PC3":"PC3"},
-                title="PCA Projection (3D)"
-            )
-
-        fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+            fig = px.scatter_3d(dfs, x="PC1", y="PC2", z="PC3",
+                                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
+                                title="PCA (3D)")
         st.plotly_chart(fig, use_container_width=True)
+
+# ─── Tab 5: Incidents ────────────────────────────────────────────────────────────
+with tabs[4]:
+    st.header("🚨 Incident Dashboard")
+    incidents = load_incidents()
+    if not incidents:
+        st.info("No incidents logged yet.")
+    else:
+        df_inc = pd.DataFrame(incidents)
+        st.dataframe(df_inc[["timestamp","model","anomaly_count"]])
+        for i,row in df_inc.iterrows():
+            st.markdown(f"**Incident {i+1}** — {row['timestamp']} — *{row['model']}* detected {row['anomaly_count']} anomalies")
+            st.table(row["top_samples"])
+
+# ─── Tab 6: Tuning Lab ───────────────────────────────────────────────────────────
+with tabs[5]:
+    st.header("🛠️ Hyperparameter Tuning Lab")
+    if "last_df" not in st.session_state:
+        st.info("Run a prediction first to access tuning.")
+    else:
+        df        = st.session_state["last_df"]
+        X_all     = scaler.transform(df[train_cols].values)
+        # sample subset
+        sample_n  = min(len(X_all), 1000)
+        idxs      = np.random.choice(len(X_all), sample_n, replace=False)
+        X_sample  = X_all[idxs]
+        y_sample  = df["anomaly"].iloc[idxs].values
+
+        st.subheader("Isolation Forest Tuning")
+        iso_c = st.slider("contamination", 0.01, 0.5, 0.1, 0.01, key="tun_iso_cont")
+        preds_iso, scores_iso = predict_iso(X_sample, contamination=iso_c)
+        precision_iso = precision_score(y_sample, preds_iso, zero_division=0)
+        recall_iso    = recall_score(y_sample, preds_iso, zero_division=0)
+        f1_iso        = f1_score(y_sample, preds_iso, zero_division=0)
+        fpr_iso,tpr_iso,_ = roc_curve(y_sample, scores_iso)
+        auc_iso       = calc_auc(fpr_iso, tpr_iso)
+        st.write(f"Precision: {precision_iso:.2f}, Recall: {recall_iso:.2f}, F1: {f1_iso:.2f}, AUC: {auc_iso:.2f}")
+        fig_iso = px.area(
+            x=fpr_iso, y=tpr_iso, title="ROC Curve (IForest)",
+            labels={"x":"FPR","y":"TPR"},
+            width=600, height=300
+        )
+        st.plotly_chart(fig_iso)
+
+        st.subheader("Autoencoder Tuning")
+        ae_t = st.slider("threshold", 0.0, 1.0, 0.02, 0.005, key="tun_ae_thresh")
+        preds_ae, scores_ae = predict_ae(X_sample, thresh=ae_t)
+        precision_ae = precision_score(y_sample, preds_ae, zero_division=0)
+        recall_ae    = recall_score(y_sample, preds_ae, zero_division=0)
+        f1_ae        = f1_score(y_sample, preds_ae, zero_division=0)
+        fpr_ae,tpr_ae,_ = roc_curve(y_sample, scores_ae)
+        auc_ae       = calc_auc(fpr_ae,tpr_ae)
+        st.write(f"Precision: {precision_ae:.2f}, Recall: {recall_ae:.2f}, F1: {f1_ae:.2f}, AUC: {auc_ae:.2f}")
+        fig_ae = px.area(x=fpr_ae, y=tpr_ae, title="ROC Curve (AE)", labels={"x":"FPR","y":"TPR"}, width=600, height=300)
+        st.plotly_chart(fig_ae)
+
+        st.subheader("LOF Tuning")
+        lof_n  = st.slider("n_neighbors", 5, 100, 20, 1, key="tun_lof_nn")
+        lof_c  = st.slider("contamination", 0.01, 0.5, 0.02, 0.01, key="tun_lof_cont")
+        preds_lof, scores_lof = predict_lof(X_sample, contamination=lof_c, n_neighbors=lof_n)
+        precision_lof = precision_score(y_sample, preds_lof, zero_division=0)
+        recall_lof    = recall_score(y_sample, preds_lof, zero_division=0)
+        f1_lof        = f1_score(y_sample, preds_lof, zero_division=0)
+        fpr_lof,tpr_lof,_ = roc_curve(y_sample, scores_lof)
+        auc_lof       = calc_auc(fpr_lof,tpr_lof)
+        st.write(f"Precision: {precision_lof:.2f}, Recall: {recall_lof:.2f}, F1: {f1_lof:.2f}, AUC: {auc_lof:.2f}")
+        fig_lof = px.area(x=fpr_lof, y=tpr_lof, title="ROC Curve (LOF)", labels={"x":"FPR","y":"TPR"}, width=600, height=300)
+        st.plotly_chart(fig_lof)
