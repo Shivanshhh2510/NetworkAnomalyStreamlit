@@ -4,17 +4,23 @@ import pandas as pd
 import numpy as np
 import joblib
 
-# ─── Monkey‐patch Keras InputLayer to swallow legacy batch_shape ────────────────
+# ─── Monkey‐patch 1: InputLayer __init__ to swallow legacy batch_shape ─────────
 import tensorflow as tf
 from tensorflow.keras.layers import InputLayer as _InputLayer
-_unpatched_init = _InputLayer.__init__
-def _patched_init(self, *args, batch_shape=None, **kwargs):
+_unpatched_input_init = _InputLayer.__init__
+def _patched_input_init(self, *args, batch_shape=None, **kwargs):
     if batch_shape is not None:
-        # rename the old `batch_shape` key to what Keras expects now
+        # rename to what new Keras expects
         kwargs["batch_input_shape"] = tuple(batch_shape)
-    return _unpatched_init(self, *args, **kwargs)
-_InputLayer.__init__ = _patched_init
+    return _unpatched_input_init(self, *args, **kwargs)
+_InputLayer.__init__ = _patched_input_init
 
+# ─── Monkey‐patch 2: register mixed‐precision Policy under old name ────────────
+from tensorflow.keras.mixed_precision import Policy
+from tensorflow.keras.utils import register_keras_serializable
+register_keras_serializable(package="keras", name="DTypePolicy")(Policy)
+
+# ─── Now safe to import load_model ─────────────────────────────────────────────
 from tensorflow.keras.models import load_model
 import plotly.express as px
 import seaborn as sns
@@ -23,24 +29,26 @@ from sklearn.decomposition import PCA
 
 st.set_page_config(page_title="Network Traffic Anomaly Detection", layout="wide")
 
-# ─── Load Artifacts ───────────────────────────────────────────────────────────────
+# ─── Load Artifacts ─────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_artifacts():
-    iso       = joblib.load("iso_model.pkl")
-    ae        = load_model("autoencoder_model.h5", compile=False)
-    lof       = joblib.load("lof_model.pkl")
-    scaler    = joblib.load("scaler.pkl")
-    train_cols= joblib.load("train_cols.pkl")
-    iso_shap  = pd.read_csv("iso_shap_importances.csv", index_col=0)
+    iso        = joblib.load("iso_model.pkl")
+    ae         = load_model("autoencoder_model.h5", compile=False)
+    lof        = joblib.load("lof_model.pkl")
+    scaler     = joblib.load("scaler.pkl")
+    train_cols = joblib.load("train_cols.pkl")
+    iso_shap   = pd.read_csv("iso_shap_importances.csv", index_col=0)
     return iso, ae, lof, scaler, train_cols, iso_shap
 
 iso_model, ae_model, lof_model, scaler, train_cols, iso_shap_imp = load_artifacts()
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────────
+# ─── Helpers ───────────────────────────────────────────────────────────────────
 def detect_compression(buf):
     name = getattr(buf, "name", "").lower()
-    if name.endswith((".gz","gzip")): return "gzip"
-    if name.endswith(".zip"):          return "zip"
+    if name.endswith((".gz", "gzip")):
+        return "gzip"
+    if name.endswith(".zip"):
+        return "zip"
     return None
 
 @st.cache_data(show_spinner=False, max_entries=1)
@@ -85,20 +93,20 @@ def predict_lof(X):
 def lof_scores(X):
     return lof_model.decision_function(X)
 
-# ─── UI ───────────────────────────────────────────────────────────────────────────
+# ─── UI ─────────────────────────────────────────────────────────────────────────
 tabs = st.tabs(["🔍 Predict", "📊 EDA", "🧠 Explain", "🔬 Embedding"])
 
-# ─── Tab 1: Predict ───────────────────────────────────────────────────────────────
+# ─── Tab 1: Predict ─────────────────────────────────────────────────────────────
 with tabs[0]:
     st.sidebar.header("Settings")
-    upload_type  = st.sidebar.radio("Upload type:", ("Raw KDD data","Preprocessed CSV"))
-    sample_rows  = st.sidebar.slider("Rows to sample (raw)",10000,200000,50000,10000)
-    iso_cont     = st.sidebar.slider("IForest contamination",0.01,0.5,0.1,0.01)
-    lof_cont     = st.sidebar.slider("LOF contamination", 0.01,0.5,0.02,0.01)
-    ae_thresh    = st.sidebar.slider("AE threshold",      0.0,1.0,0.02,0.005)
-    model_choice = st.sidebar.selectbox("Model:",[
-        "Isolation Forest","Autoencoder","Local Outlier Factor",
-        "Hybrid – Union","Hybrid – Intersection"
+    upload_type  = st.sidebar.radio("Upload type:", ("Raw KDD data", "Preprocessed CSV"))
+    sample_rows  = st.sidebar.slider("Rows to sample (raw)", 10000, 200000, 50000, 10000)
+    iso_cont     = st.sidebar.slider("IForest contamination", 0.01, 0.5, 0.1, 0.01)
+    lof_cont     = st.sidebar.slider("LOF contamination",    0.01, 0.5, 0.02, 0.01)
+    ae_thresh    = st.sidebar.slider("AE threshold",         0.0, 1.0, 0.02, 0.005)
+    model_choice = st.sidebar.selectbox("Model:", [
+        "Isolation Forest", "Autoencoder", "Local Outlier Factor",
+        "Hybrid – Union", "Hybrid – Intersection"
     ])
 
     st.title("🚨 Network Traffic Anomaly Detection")
@@ -109,8 +117,8 @@ with tabs[0]:
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
-        # Preprocess
-        if upload_type=="Raw KDD data":
+        # 1) Preprocess
+        if upload_type == "Raw KDD data":
             st.warning(f"Processing first {sample_rows:,} rows…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
@@ -122,31 +130,36 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state["last_meta"] = None
 
-        # Refit & predict
-        iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
-        lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
-        if model_choice=="Isolation Forest":
+        # 2) Refit models
+        iso_model.set_params(contamination=iso_cont)
+        iso_model.fit(X)
+        lof_model.set_params(contamination=lof_cont)
+        lof_model.fit(X)
+
+        # 3) Predict
+        if model_choice == "Isolation Forest":
             preds = predict_iso(X)
-        elif model_choice=="Autoencoder":
+        elif model_choice == "Autoencoder":
             mse, preds = predict_ae(X, ae_thresh)
-        elif model_choice=="Local Outlier Factor":
+        elif model_choice == "Local Outlier Factor":
             preds = predict_lof(X)
-        elif model_choice=="Hybrid – Union":
-            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
+        elif model_choice == "Hybrid – Union":
+            iso_p, ae_p = predict_iso(X), predict_ae(X, ae_thresh)[1]
             preds = np.logical_or(iso_p, ae_p).astype(int)
         else:
-            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
+            iso_p, ae_p = predict_iso(X), predict_ae(X, ae_thresh)[1]
             preds = np.logical_and(iso_p, ae_p).astype(int)
 
         df["anomaly"] = preds
         st.session_state["last_df"] = df
 
+        # Show results
         st.subheader("Sample Results")
         st.dataframe(df.head(10), use_container_width=True)
 
-        if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
+        if model_choice in ("Autoencoder", "Hybrid – Union", "Hybrid – Intersection"):
             rec      = ae_model.predict(X)
-            feat_err = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
+            feat_err = pd.Series(np.mean((X-rec)**2, axis=0), index=train_cols)
             st.subheader("Top AE Reconstruction Errors")
             st.bar_chart(feat_err.nlargest(10))
 
@@ -156,7 +169,7 @@ with tabs[0]:
         csv = df.to_csv(index=False).encode()
         st.download_button("⬇️ Download Results", csv, "results.csv", "text/csv")
 
-# ─── Tab 2: EDA ──────────────────────────────────────────────────────────────────
+# ─── Tab 2: EDA ─────────────────────────────────────────────────────────────────
 with tabs[1]:
     st.header("📊 Exploratory Data Analysis")
     if "last_df" not in st.session_state:
@@ -190,17 +203,17 @@ with tabs[1]:
 # ─── Tab 3: Explain ─────────────────────────────────────────────────────────────
 with tabs[2]:
     st.header("🧠 Explainability")
-    choice = st.selectbox("Explain model:",[
-        "Isolation Forest","Autoencoder","Local Outlier Factor"
+    choice = st.selectbox("Explain model:", [
+        "Isolation Forest", "Autoencoder", "Local Outlier Factor"
     ])
-    if choice=="Isolation Forest":
+    if choice == "Isolation Forest":
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
         fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
                      labels={"importance":"Mean |SHAP value|"})
         fig.update_layout(yaxis_categoryorder="total ascending", plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
 
-    elif choice=="Autoencoder":
+    elif choice == "Autoencoder":
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
         rec= ae_model.predict(X)
@@ -225,12 +238,10 @@ with tabs[3]:
     else:
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
-
-        # sample for speed
-        n = min(len(X), 5000)
+        n  = min(len(X), 5000)
         idxs = np.random.choice(len(X), n, replace=False)
         Xs = X[idxs]
-        dfs = df.iloc[idxs].copy()
+        dfs= df.iloc[idxs].copy()
 
         pca = PCA(n_components=2)
         coords = pca.fit_transform(Xs)
