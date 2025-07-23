@@ -6,6 +6,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import tensorflow as tf
+from tensorflow.keras.layers import InputLayer as _InputLayer
+# ─── Monkey‐patch InputLayer to accept `batch_shape` ─────────────────────────────
+_unpatched_init = _InputLayer.__init__
+def _patched_init(self, *args, batch_shape=None, **kwargs):
+    if batch_shape is not None:
+        kwargs["batch_input_shape"] = tuple(batch_shape)
+    return _unpatched_init(self, *args, **kwargs)
+_InputLayer.__init__ = _patched_init
+
 from tensorflow.keras.models import load_model
 import plotly.express as px
 import seaborn as sns
@@ -159,7 +169,6 @@ with tabs[0]:
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
-        # preprocess
         if upload_type=="Raw KDD data":
             st.warning(f"Processing first {sample_rows:,} rows…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
@@ -172,7 +181,6 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state["last_meta"] = None
 
-        # predict
         if model_choice=="Isolation Forest":
             preds, scores = predict_iso(X, contamination=iso_cont)
         elif model_choice=="Autoencoder":
@@ -195,7 +203,6 @@ with tabs[0]:
         st.session_state["last_model"] = model_choice
         st.session_state["last_scores"]= scores
 
-        # display
         st.subheader("Sample Results")
         st.dataframe(df.head(10), use_container_width=True)
 
@@ -211,7 +218,6 @@ with tabs[0]:
         csv = df.to_csv(index=False).encode()
         st.download_button("⬇️ Download Results", csv, "results.csv", "text/csv")
 
-        # check for alert
         total_anoms = int(preds.sum())
         if total_anoms >= alert_thresh:
             incident = log_incident(model_choice, total_anoms, df[preds==1].head(5))
@@ -315,11 +321,12 @@ with tabs[4]:
     if not incidents:
         st.info("No incidents logged yet.")
     else:
-        df_inc = pd.DataFrame(incidents)
-        st.dataframe(df_inc[["timestamp","model","anomaly_count"]])
-        for i,row in df_inc.iterrows():
-            st.markdown(f"**Incident {i+1}** — {row['timestamp']} — *{row['model']}* detected {row['anomaly_count']} anomalies")
-            st.table(row["top_samples"])
+        for i,inc in enumerate(incidents, 1):
+            st.markdown(f"### Incident {i}")
+            st.write(f"- **Time:** {inc['timestamp']}")
+            st.write(f"- **Model:** {inc['model']}")
+            st.write(f"- **Anomaly Count:** {inc['anomaly_count']}")
+            st.table(pd.DataFrame(inc["top_samples"]))
 
 # ─── Tab 6: Tuning Lab ───────────────────────────────────────────────────────────
 with tabs[5]:
@@ -329,7 +336,6 @@ with tabs[5]:
     else:
         df        = st.session_state["last_df"]
         X_all     = scaler.transform(df[train_cols].values)
-        # sample subset
         sample_n  = min(len(X_all), 1000)
         idxs      = np.random.choice(len(X_all), sample_n, replace=False)
         X_sample  = X_all[idxs]
@@ -344,12 +350,8 @@ with tabs[5]:
         fpr_iso,tpr_iso,_ = roc_curve(y_sample, scores_iso)
         auc_iso       = calc_auc(fpr_iso, tpr_iso)
         st.write(f"Precision: {precision_iso:.2f}, Recall: {recall_iso:.2f}, F1: {f1_iso:.2f}, AUC: {auc_iso:.2f}")
-        fig_iso = px.area(
-            x=fpr_iso, y=tpr_iso, title="ROC Curve (IForest)",
-            labels={"x":"FPR","y":"TPR"},
-            width=600, height=300
-        )
-        st.plotly_chart(fig_iso)
+        fig_iso = px.area(x=fpr_iso, y=tpr_iso, title="ROC Curve (IForest)", labels={"x":"FPR","y":"TPR"})
+        st.plotly_chart(fig_iso, use_container_width=True)
 
         st.subheader("Autoencoder Tuning")
         ae_t = st.slider("threshold", 0.0, 1.0, 0.02, 0.005, key="tun_ae_thresh")
@@ -358,10 +360,10 @@ with tabs[5]:
         recall_ae    = recall_score(y_sample, preds_ae, zero_division=0)
         f1_ae        = f1_score(y_sample, preds_ae, zero_division=0)
         fpr_ae,tpr_ae,_ = roc_curve(y_sample, scores_ae)
-        auc_ae       = calc_auc(fpr_ae,tpr_ae)
+        auc_ae       = calc_auc(fpr_ae, tpr_ae)
         st.write(f"Precision: {precision_ae:.2f}, Recall: {recall_ae:.2f}, F1: {f1_ae:.2f}, AUC: {auc_ae:.2f}")
-        fig_ae = px.area(x=fpr_ae, y=tpr_ae, title="ROC Curve (AE)", labels={"x":"FPR","y":"TPR"}, width=600, height=300)
-        st.plotly_chart(fig_ae)
+        fig_ae = px.area(x=fpr_ae, y=tpr_ae, title="ROC Curve (AE)", labels={"x":"FPR","y":"TPR"})
+        st.plotly_chart(fig_ae, use_container_width=True)
 
         st.subheader("LOF Tuning")
         lof_n  = st.slider("n_neighbors", 5, 100, 20, 1, key="tun_lof_nn")
@@ -371,7 +373,7 @@ with tabs[5]:
         recall_lof    = recall_score(y_sample, preds_lof, zero_division=0)
         f1_lof        = f1_score(y_sample, preds_lof, zero_division=0)
         fpr_lof,tpr_lof,_ = roc_curve(y_sample, scores_lof)
-        auc_lof       = calc_auc(fpr_lof,tpr_lof)
+        auc_lof       = calc_auc(fpr_lof, tpr_lof)
         st.write(f"Precision: {precision_lof:.2f}, Recall: {recall_lof:.2f}, F1: {f1_lof:.2f}, AUC: {auc_lof:.2f}")
-        fig_lof = px.area(x=fpr_lof, y=tpr_lof, title="ROC Curve (LOF)", labels={"x":"FPR","y":"TPR"}, width=600, height=300)
-        st.plotly_chart(fig_lof)
+        fig_lof = px.area(x=fpr_lof, y=tpr_lof, title="ROC Curve (LOF)", labels={"x":"FPR","y":"TPR"})
+        st.plotly_chart(fig_lof, use_container_width=True)
