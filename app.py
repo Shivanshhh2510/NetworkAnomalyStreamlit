@@ -3,17 +3,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-
-# ─── Monkey‐patch Keras InputLayer to swallow legacy batch_shape ────────────────
-import tensorflow as tf
-from tensorflow.keras.layers import InputLayer as _InputLayer
-_unpatched_init = _InputLayer.__init__
-def _patched_init(self, *args, batch_shape=None, **kwargs):
-    if batch_shape is not None:
-        kwargs["batch_input_shape"] = tuple(batch_shape)
-    return _unpatched_init(self, *args, **kwargs)
-_InputLayer.__init__ = _patched_init
-
 from tensorflow.keras.models import load_model
 import plotly.express as px
 import seaborn as sns
@@ -131,16 +120,18 @@ with tabs[0]:
             preds = predict_lof(X)
         elif model_choice=="Hybrid – Union":
             iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_or(iso_p, ae_p).astype(int)
+            preds = np.logical_or(iso_p,ae_p).astype(int)
         else:
             iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_and(iso_p, ae_p).astype(int)
+            preds = np.logical_and(iso_p,ae_p).astype(int)
 
         df["anomaly"] = preds
-        st.session_state["last_df"] = df
+        st.session_state["last_df"]    = df
+        st.session_state["last_model"] = model_choice
+        st.session_state["ae_thresh"]  = ae_thresh
 
         st.subheader("Sample Results")
-        st.dataframe(df.head(10), use_container_width=True)
+        st.dataframe(df.head(10))
 
         if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
             rec      = ae_model.predict(X)
@@ -192,27 +183,28 @@ with tabs[2]:
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
     if choice=="Isolation Forest":
+        st.write("Global SHAP importances for IForest.")
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
-        fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
-                     labels={"importance":"Mean |SHAP value|"})
-        fig.update_layout(yaxis_categoryorder="total ascending", plot_bgcolor="white")
+        fig = px.bar(shap_df, x="importance", y="feature", orientation="h")
+        fig.update_layout(yaxis_categoryorder="total ascending",plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
 
     elif choice=="Autoencoder":
+        st.write("Top AE reconstruction-error features.")
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
         rec= ae_model.predict(X)
         errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
         top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
-        fig = px.bar(top, x="error", y="feature", orientation="h",
-                     labels={"error":"Reconstruction MSE"})
+        fig = px.bar(top, x="error", y="feature", orientation="h")
         st.plotly_chart(fig, use_container_width=True)
 
     else:
-        df     = st.session_state["last_df"]
-        X      = scaler.transform(df[train_cols].values)
+        st.write("LOF score distribution (lower=more anomalous).")
+        df = st.session_state["last_df"]
+        X  = scaler.transform(df[train_cols].values)
         scores = lof_scores(X)
-        fig    = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
+        fig = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         st.plotly_chart(fig, use_container_width=True)
 
 # ─── Tab 4: Embedding ────────────────────────────────────────────────────────────
@@ -223,30 +215,22 @@ with tabs[3]:
     else:
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
+
+        # sample for speed
         n = min(len(X), 5000)
         idxs = np.random.choice(len(X), n, replace=False)
         Xs = X[idxs]
         dfs = df.iloc[idxs].copy()
-        dim = st.radio("Projection dimension:", ("2D", "3D"))
-        if dim == "2D":
-            pca = PCA(n_components=2)
-            coords = pca.fit_transform(Xs)
-            dfs["PC1"], dfs["PC2"] = coords[:,0], coords[:,1]
-            fig = px.scatter(
-                dfs, x="PC1", y="PC2",
-                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2"},
-                title="PCA (2D)"
-            )
-        else:
-            pca = PCA(n_components=3)
-            coords = pca.fit_transform(Xs)
-            dfs["PC1"], dfs["PC2"], dfs["PC3"] = coords[:,0], coords[:,1], coords[:,2]
-            fig = px.scatter_3d(
-                dfs, x="PC1", y="PC2", z="PC3",
-                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2","PC3":"PC3"},
-                title="PCA (3D)"
-            )
-        fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+
+        pca = PCA(n_components=2)
+        coords = pca.fit_transform(Xs)
+        dfs["PC1"], dfs["PC2"] = coords[:,0], coords[:,1]
+
+        st.write("Projected into 2 principal components. Normal in blue, anomalies in red.")
+        fig = px.scatter(
+            dfs, x="PC1", y="PC2",
+            color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
+            labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2"},
+            title="PCA Projection"
+        )
         st.plotly_chart(fig, use_container_width=True)
