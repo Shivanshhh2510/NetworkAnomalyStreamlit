@@ -1,9 +1,10 @@
 streamlit
 pandas
-numpy
+numpy<2.0
 scikit-learn
 joblib
-tensorflow>=2.14.0
+tensorflow==2.14.1
+keras==2.14.0
 plotly
 seaborn
 matplotlib
