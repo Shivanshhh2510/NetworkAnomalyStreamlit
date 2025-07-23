@@ -3,6 +3,18 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+
+# ─── Monkey‐patch Keras InputLayer to swallow legacy batch_shape ────────────────
+import tensorflow as tf
+from tensorflow.keras.layers import InputLayer as _InputLayer
+_unpatched_init = _InputLayer.__init__
+def _patched_init(self, *args, batch_shape=None, **kwargs):
+    if batch_shape is not None:
+        # rename the old `batch_shape` key to what Keras expects now
+        kwargs["batch_input_shape"] = tuple(batch_shape)
+    return _unpatched_init(self, *args, **kwargs)
+_InputLayer.__init__ = _patched_init
+
 from tensorflow.keras.models import load_model
 import plotly.express as px
 import seaborn as sns
@@ -82,8 +94,8 @@ with tabs[0]:
     upload_type  = st.sidebar.radio("Upload type:", ("Raw KDD data","Preprocessed CSV"))
     sample_rows  = st.sidebar.slider("Rows to sample (raw)",10000,200000,50000,10000)
     iso_cont     = st.sidebar.slider("IForest contamination",0.01,0.5,0.1,0.01)
-    lof_cont     = st.sidebar.slider("LOF contamination",   0.01,0.5,0.02,0.01)
-    ae_thresh    = st.sidebar.slider("AE threshold",       0.0,1.0,0.02,0.005)
+    lof_cont     = st.sidebar.slider("LOF contamination", 0.01,0.5,0.02,0.01)
+    ae_thresh    = st.sidebar.slider("AE threshold",      0.0,1.0,0.02,0.005)
     model_choice = st.sidebar.selectbox("Model:",[
         "Isolation Forest","Autoencoder","Local Outlier Factor",
         "Hybrid – Union","Hybrid – Intersection"
@@ -97,6 +109,7 @@ with tabs[0]:
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
+        # Preprocess
         if upload_type=="Raw KDD data":
             st.warning(f"Processing first {sample_rows:,} rows…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
@@ -109,9 +122,9 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state["last_meta"] = None
 
+        # Refit & predict
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
-
         if model_choice=="Isolation Forest":
             preds = predict_iso(X)
         elif model_choice=="Autoencoder":
@@ -120,18 +133,16 @@ with tabs[0]:
             preds = predict_lof(X)
         elif model_choice=="Hybrid – Union":
             iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_or(iso_p,ae_p).astype(int)
+            preds = np.logical_or(iso_p, ae_p).astype(int)
         else:
             iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
-            preds = np.logical_and(iso_p,ae_p).astype(int)
+            preds = np.logical_and(iso_p, ae_p).astype(int)
 
         df["anomaly"] = preds
-        st.session_state["last_df"]    = df
-        st.session_state["last_model"] = model_choice
-        st.session_state["ae_thresh"]  = ae_thresh
+        st.session_state["last_df"] = df
 
         st.subheader("Sample Results")
-        st.dataframe(df.head(10))
+        st.dataframe(df.head(10), use_container_width=True)
 
         if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
             rec      = ae_model.predict(X)
@@ -183,28 +194,27 @@ with tabs[2]:
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
     if choice=="Isolation Forest":
-        st.write("Global SHAP importances for IForest.")
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
-        fig = px.bar(shap_df, x="importance", y="feature", orientation="h")
-        fig.update_layout(yaxis_categoryorder="total ascending",plot_bgcolor="white")
+        fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
+                     labels={"importance":"Mean |SHAP value|"})
+        fig.update_layout(yaxis_categoryorder="total ascending", plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
 
     elif choice=="Autoencoder":
-        st.write("Top AE reconstruction-error features.")
         df = st.session_state["last_df"]
         X  = scaler.transform(df[train_cols].values)
         rec= ae_model.predict(X)
         errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
         top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
-        fig = px.bar(top, x="error", y="feature", orientation="h")
+        fig = px.bar(top, x="error", y="feature", orientation="h",
+                     labels={"error":"Reconstruction MSE"})
         st.plotly_chart(fig, use_container_width=True)
 
     else:
-        st.write("LOF score distribution (lower=more anomalous).")
-        df = st.session_state["last_df"]
-        X  = scaler.transform(df[train_cols].values)
+        df     = st.session_state["last_df"]
+        X      = scaler.transform(df[train_cols].values)
         scores = lof_scores(X)
-        fig = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
+        fig    = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         st.plotly_chart(fig, use_container_width=True)
 
 # ─── Tab 4: Embedding ────────────────────────────────────────────────────────────
