@@ -81,7 +81,7 @@ tabs = st.tabs([
     "📊 EDA",
     "🧠 Explain",
     "🔬 Embedding",
-    "📈 Timeline",
+    "🎓 Learn",
     "⚡ Live Feed"
 ])
 
@@ -238,7 +238,6 @@ with tabs[3]:
         Xs = X[idxs]
         dfs = df.iloc[idxs].copy()
 
-        # choose 2D vs 3D
         dim = st.radio("Projection dimension:", ("2D", "3D"))
         if dim == "2D":
             pca = PCA(n_components=2)
@@ -262,20 +261,53 @@ with tabs[3]:
         fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-# ─── Tab 5: Timeline ─────────────────────────────────────────────────────────────
+# ─── Tab 5: Learn ────────────────────────────────────────────────────────────────
 with tabs[4]:
-    st.header("📈 Anomaly Timeline")
-    if "last_df" not in st.session_state:
-        st.info("Upload & predict to see timeline.")
-    else:
-        df = st.session_state["last_df"]
-        if "timestamp" not in df.columns:
-            st.error("No timestamp column found. Please include a datetime column named `timestamp`.")
-        else:
-            df_ts = df.copy()
-            df_ts["timestamp"] = pd.to_datetime(df_ts["timestamp"])
-            fig = px.line(df_ts, x="timestamp", y="anomaly", title="Anomalies Over Time")
-            st.plotly_chart(fig, use_container_width=True)
+    st.header("🎓 Educational Hub")
+    st.markdown("""
+**What is Anomaly Detection?**  
+Anomaly detection aims to find unusual patterns in data that do not conform to expected behavior.  
+These “outliers” can indicate fraud, network intrusions, system faults, and more.
+
+---
+
+**Key Concepts**  
+- **Contamination**: The expected proportion of outliers in your dataset.  
+- **Threshold**: In Autoencoders, values above a reconstruction-error threshold are flagged.  
+- **Novelty vs. Outlier Detection**:  
+  - *Isolation Forest* and *LOF* can both detect anomalies directly on new (unseen) data.  
+  - *Autoencoder* must be trained only on “normal” data then applied to all data.
+
+---
+
+**Model Summaries**  
+
+1. **Isolation Forest**  
+   - Constructs random decision trees and isolates points.  
+   - Faster on large datasets, interpretable via SHAP values.
+
+2. **Autoencoder**  
+   - Neural network that learns to reconstruct normal samples.  
+   - High reconstruction error → anomaly.
+
+3. **Local Outlier Factor (LOF)**  
+   - Measures local density deviation of a given data point.  
+   - Lower LOF score → more likely an anomaly.
+
+---
+
+**Tips & Tricks**  
+- Start with a small contamination (e.g. 1–5%) and adjust based on precision/recall.  
+- Use multiple models (Hybrid) to improve robustness.  
+- Visualize errors (bar charts) to understand which features matter most.
+
+---
+
+🔗 **Further Reading**  
+- Scikit-learn docs on [Isolation Forest](https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.IsolationForest.html)  
+- TensorFlow guide on [Autoencoders](https://www.tensorflow.org/tutorials/generative/autoencoder)  
+- LOF explanation on [Wikipedia](https://en.wikipedia.org/wiki/Local_outlier_factor)
+""")
 
 # ─── Tab 6: Live Feed ────────────────────────────────────────────────────────────
 with tabs[5]:
@@ -311,7 +343,6 @@ with tabs[5]:
                 row = df.iloc[idx]
                 ts  = datetime.now()
                 an  = int(row["anomaly"])
-                # append
                 new = pd.DataFrame({"timestamp":[ts],"anomaly":[an]})
                 st.session_state.stream_data = pd.concat(
                     [st.session_state.stream_data, new],
