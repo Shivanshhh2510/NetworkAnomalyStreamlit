@@ -1,4 +1,7 @@
 import os
+import time
+from datetime import datetime
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -74,7 +77,13 @@ def lof_scores(X):
     return lof_model.decision_function(X)
 
 # ─── UI ───────────────────────────────────────────────────────────────────────────
-tabs = st.tabs(["🔍 Predict", "📊 EDA", "🧠 Explain", "🔬 Embedding", "📈 Timeline"])
+tabs = st.tabs([
+    "🔍 Predict",
+    "📊 EDA",
+    "🧠 Explain",
+    "🔬 Embedding",
+    "⚡ Live Feed"
+])
 
 # ─── Tab 1: Predict ───────────────────────────────────────────────────────────────
 with tabs[0]:
@@ -97,8 +106,9 @@ with tabs[0]:
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
-        if upload_type=="Raw KDD data":
-            st.warning(f"Processing first {sample_rows:,} rows of raw data…")
+        # 1) Preprocess
+        if upload_type == "Raw KDD data":
+            st.warning(f"Processing first {sample_rows:,} rows…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
@@ -109,18 +119,18 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state["last_meta"] = None
 
-        # re-fit models
+        # 2) (Re)fit
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
-        # predict
-        if model_choice=="Isolation Forest":
+        # 3) Predict
+        if model_choice == "Isolation Forest":
             preds = predict_iso(X)
-        elif model_choice=="Autoencoder":
+        elif model_choice == "Autoencoder":
             mse, preds = predict_ae(X, ae_thresh)
-        elif model_choice=="Local Outlier Factor":
+        elif model_choice == "Local Outlier Factor":
             preds = predict_lof(X)
-        elif model_choice=="Hybrid – Union":
+        elif model_choice == "Hybrid – Union":
             iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
             preds = np.logical_or(iso_p, ae_p).astype(int)
         else:
@@ -132,6 +142,7 @@ with tabs[0]:
         st.session_state["last_model"] = model_choice
         st.session_state["ae_thresh"]  = ae_thresh
 
+        # Display
         st.subheader("Sample Results")
         st.dataframe(df.head(10), use_container_width=True)
 
@@ -185,7 +196,7 @@ with tabs[2]:
     choice = st.selectbox("Explain model:",[
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
-    if choice=="Isolation Forest":
+    if choice == "Isolation Forest":
         st.write("Global SHAP importances for Isolation Forest decisions.")
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
         fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
@@ -193,7 +204,7 @@ with tabs[2]:
         fig.update_layout(yaxis_categoryorder="total ascending", plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
 
-    elif choice=="Autoencoder":
+    elif choice == "Autoencoder":
         st.write("Top features by autoencoder reconstruction error.")
         df2 = st.session_state["last_df"]
         X2  = scaler.transform(df2[train_cols].values)
@@ -218,13 +229,13 @@ with tabs[3]:
     if "last_df" not in st.session_state:
         st.info("Upload & predict to see embedding.")
     else:
-        df4 = st.session_state["last_df"]
-        X4  = scaler.transform(df4[train_cols].values)
+        df_e = st.session_state["last_df"]
+        X_e  = scaler.transform(df_e[train_cols].values)
 
-        n = min(len(X4), 5000)
-        idxs = np.random.choice(len(X4), n, replace=False)
-        Xs  = X4[idxs]
-        dfs = df4.iloc[idxs].copy()
+        n = min(len(X_e), 5000)
+        idxs = np.random.choice(len(X_e), n, replace=False)
+        Xs = X_e[idxs]
+        dfs = df_e.iloc[idxs].copy()
 
         dim = st.radio("Projection dimension:", ("2D", "3D"))
         if dim == "2D":
@@ -232,53 +243,86 @@ with tabs[3]:
             coords = pca.fit_transform(Xs)
             dfs["PC1"], dfs["PC2"] = coords[:,0], coords[:,1]
             st.write("2-D PCA: Normal in blue, anomalies in red.")
-            fig = px.scatter(
-                dfs, x="PC1", y="PC2",
-                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2"},
-                title="PCA Projection (2D)"
-            )
+            fig = px.scatter(dfs, x="PC1", y="PC2",
+                             color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
+                             labels={"color":"Anomaly"}, title="PCA Projection (2D)")
         else:
             pca = PCA(n_components=3)
             coords = pca.fit_transform(Xs)
             dfs["PC1"], dfs["PC2"], dfs["PC3"] = coords[:,0], coords[:,1], coords[:,2]
-            st.write("3-D PCA: drag to rotate view.")
-            fig = px.scatter_3d(
-                dfs, x="PC1", y="PC2", z="PC3",
-                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2","PC3":"PC3"},
-                title="PCA Projection (3D)"
-            )
-
+            st.write("3-D PCA: drag to rotate.")
+            fig = px.scatter_3d(dfs, x="PC1", y="PC2", z="PC3",
+                                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
+                                labels={"color":"Anomaly"}, title="PCA Projection (3D)")
         fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-# ─── Tab 5: Timeline ─────────────────────────────────────────────────────────────
+# ─── Tab 5: Live Streaming Feed ───────────────────────────────────────────────────
 with tabs[4]:
-    st.header("📈 Anomaly Timeline")
+    st.header("⚡ Real-Time Streaming Feed")
     if "last_df" not in st.session_state:
-        st.info("Upload & predict to see timeline.")
+        st.info("Run a prediction first to populate data.")
     else:
-        df5 = st.session_state["last_df"].copy()
+        # initialize
+        if "live_idx" not in st.session_state:
+            st.session_state.live_idx = 0
+        if "live_data" not in st.session_state:
+            st.session_state.live_data = pd.DataFrame(columns=["timestamp","anomaly"])
+        if "streaming" not in st.session_state:
+            st.session_state.streaming = False
 
-        if "timestamp" not in df5.columns:
-            st.warning("No `timestamp` column found → generating synthetic 1s-interval timestamps.")
-            df5["timestamp"] = pd.date_range(
-                start=pd.Timestamp.now(), periods=len(df5), freq="S"
+        speed = st.slider("Update interval (sec)", 0.1, 5.0, 1.0, step=0.1)
+        col1, col2 = st.columns(2)
+        if col1.button("▶️ Start Streaming"):
+            st.session_state.streaming = True
+        if col2.button("⏹ Stop Streaming"):
+            st.session_state.streaming = False
+
+        placeholder = st.empty()
+
+        if st.session_state.streaming:
+            df_stream = st.session_state["last_df"]
+            if st.session_state.live_idx < len(df_stream):
+                row = df_stream.iloc[st.session_state.live_idx]
+                Xr = scaler.transform([row[train_cols].values])
+                # use same model choice & thresh as before
+                mc = st.session_state["last_model"]
+                if mc == "Isolation Forest":
+                    pr = predict_iso(Xr)[0]
+                elif mc == "Autoencoder":
+                    _, pr = predict_ae(Xr, st.session_state["ae_thresh"]); pr = pr[0]
+                elif mc == "Local Outlier Factor":
+                    pr = predict_lof(Xr)[0]
+                elif mc == "Hybrid – Union":
+                    i, = predict_iso(Xr); _, a = predict_ae(Xr, st.session_state["ae_thresh"]); pr = int(i or a)
+                else:
+                    i, = predict_iso(Xr); _, a = predict_ae(Xr, st.session_state["ae_thresh"]); pr = int(i and a)
+
+                now = datetime.now()
+                st.session_state.live_data = pd.concat([
+                    st.session_state.live_data,
+                    pd.DataFrame([{"timestamp":now, "anomaly":pr}])
+                ], ignore_index=True)
+                st.session_state.live_idx += 1
+            else:
+                st.info("📡 End of stream reached.")
+                st.session_state.streaming = False
+
+            fig = px.line(
+                st.session_state.live_data,
+                x="timestamp", y="anomaly",
+                title="Anomalies over Time (Streaming)"
             )
+            placeholder.plotly_chart(fig, use_container_width=True)
+            time.sleep(speed)
+            st.experimental_rerun()
+
         else:
-            # parse any existing timestamp column
-            df5["timestamp"] = pd.to_datetime(df5["timestamp"], errors="coerce")
-
-        # aggregate anomalies per timestamp
-        timeline = df5.groupby("timestamp")["anomaly"] \
-                       .sum().reset_index(name="anomaly_count")
-
-        fig = px.line(
-            timeline,
-            x="timestamp", y="anomaly_count",
-            title="Number of Anomalies Over Time",
-            labels={"anomaly_count":"Anomaly Count","timestamp":"Time"}
-        )
-        fig.update_layout(xaxis_title=None, yaxis_title=None, plot_bgcolor="white")
-        st.plotly_chart(fig, use_container_width=True)
+            st.write("Press **Start Streaming** to begin.")
+            if not st.session_state.live_data.empty:
+                fig = px.line(
+                    st.session_state.live_data,
+                    x="timestamp", y="anomaly",
+                    title="Anomalies over Time (Streaming)"
+                )
+                placeholder.plotly_chart(fig, use_container_width=True)
