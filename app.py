@@ -65,12 +65,12 @@ st.markdown(
 # ─── Load Artifacts ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_artifacts():
-    iso       = joblib.load("iso_model.pkl")
-    ae        = load_model("autoencoder_model.h5", compile=False)
-    lof       = joblib.load("lof_model.pkl")
-    scaler    = joblib.load("scaler.pkl")
-    train_cols= joblib.load("train_cols.pkl")
-    iso_shap  = pd.read_csv("iso_shap_importances.csv", index_col=0)
+    iso        = joblib.load("iso_model.pkl")
+    ae         = load_model("autoencoder_model.h5", compile=False)
+    lof        = joblib.load("lof_model.pkl")
+    scaler     = joblib.load("scaler.pkl")
+    train_cols = joblib.load("train_cols.pkl")
+    iso_shap   = pd.read_csv("iso_shap_importances.csv", index_col=0)
     return iso, ae, lof, scaler, train_cols, iso_shap
 
 iso_model, ae_model, lof_model, scaler, train_cols, iso_shap_imp = load_artifacts()
@@ -273,7 +273,7 @@ with tabs[2]:
         fig  = px.bar(top, x="error", y="feature", orientation="h")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.write("LOF normality score distribution.")
+        st.write("LOF normality score distribution.") 
         df = st.session_state.last_df
         X  = scaler.transform(df[train_cols].values)
         scores = lof_scores(X)
