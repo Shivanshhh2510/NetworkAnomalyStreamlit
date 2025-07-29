@@ -1,7 +1,6 @@
 import os
 import time
 from datetime import datetime
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -82,6 +81,7 @@ tabs = st.tabs([
     "📊 EDA",
     "🧠 Explain",
     "🔬 Embedding",
+    "📈 Timeline",
     "⚡ Live Feed"
 ])
 
@@ -107,8 +107,8 @@ with tabs[0]:
         st.info("Please upload your dataset to begin.")
     else:
         # 1) Preprocess
-        if upload_type == "Raw KDD data":
-            st.warning(f"Processing first {sample_rows:,} rows…")
+        if upload_type=="Raw KDD data":
+            st.warning(f"Processing first {sample_rows:,} rows of raw data…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
@@ -119,18 +119,18 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state["last_meta"] = None
 
-        # 2) (Re)fit
+        # 2) Optionally re-fit models
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
         # 3) Predict
-        if model_choice == "Isolation Forest":
+        if model_choice=="Isolation Forest":
             preds = predict_iso(X)
-        elif model_choice == "Autoencoder":
+        elif model_choice=="Autoencoder":
             mse, preds = predict_ae(X, ae_thresh)
-        elif model_choice == "Local Outlier Factor":
+        elif model_choice=="Local Outlier Factor":
             preds = predict_lof(X)
-        elif model_choice == "Hybrid – Union":
+        elif model_choice=="Hybrid – Union":
             iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
             preds = np.logical_or(iso_p, ae_p).astype(int)
         else:
@@ -142,7 +142,7 @@ with tabs[0]:
         st.session_state["last_model"] = model_choice
         st.session_state["ae_thresh"]  = ae_thresh
 
-        # Display
+        # Display results
         st.subheader("Sample Results")
         st.dataframe(df.head(10), use_container_width=True)
 
@@ -196,7 +196,7 @@ with tabs[2]:
     choice = st.selectbox("Explain model:",[
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
-    if choice == "Isolation Forest":
+    if choice=="Isolation Forest":
         st.write("Global SHAP importances for Isolation Forest decisions.")
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
         fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
@@ -204,12 +204,12 @@ with tabs[2]:
         fig.update_layout(yaxis_categoryorder="total ascending", plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
 
-    elif choice == "Autoencoder":
+    elif choice=="Autoencoder":
         st.write("Top features by autoencoder reconstruction error.")
-        df2 = st.session_state["last_df"]
-        X2  = scaler.transform(df2[train_cols].values)
-        rec = ae_model.predict(X2)
-        errs = pd.Series(np.mean((X2-rec)**2,axis=0), index=train_cols)
+        df = st.session_state["last_df"]
+        X  = scaler.transform(df[train_cols].values)
+        rec= ae_model.predict(X)
+        errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
         top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
         fig = px.bar(top, x="error", y="feature", orientation="h",
                      labels={"error":"Reconstruction MSE"})
@@ -217,9 +217,9 @@ with tabs[2]:
 
     else:
         st.write("LOF ‘normality’ score distribution (lower = more anomalous).")
-        df3    = st.session_state["last_df"]
-        X3     = scaler.transform(df3[train_cols].values)
-        scores = lof_scores(X3)
+        df     = st.session_state["last_df"]
+        X      = scaler.transform(df[train_cols].values)
+        scores = lof_scores(X)
         fig    = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         st.plotly_chart(fig, use_container_width=True)
 
@@ -229,14 +229,16 @@ with tabs[3]:
     if "last_df" not in st.session_state:
         st.info("Upload & predict to see embedding.")
     else:
-        df_e = st.session_state["last_df"]
-        X_e  = scaler.transform(df_e[train_cols].values)
+        df = st.session_state["last_df"]
+        X  = scaler.transform(df[train_cols].values)
 
-        n = min(len(X_e), 5000)
-        idxs = np.random.choice(len(X_e), n, replace=False)
-        Xs = X_e[idxs]
-        dfs = df_e.iloc[idxs].copy()
+        # sample for speed
+        n = min(len(X), 5000)
+        idxs = np.random.choice(len(X), n, replace=False)
+        Xs = X[idxs]
+        dfs = df.iloc[idxs].copy()
 
+        # choose 2D vs 3D
         dim = st.radio("Projection dimension:", ("2D", "3D"))
         if dim == "2D":
             pca = PCA(n_components=2)
@@ -245,84 +247,86 @@ with tabs[3]:
             st.write("2-D PCA: Normal in blue, anomalies in red.")
             fig = px.scatter(dfs, x="PC1", y="PC2",
                              color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                             labels={"color":"Anomaly"}, title="PCA Projection (2D)")
+                             labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2"},
+                             title="PCA Projection (2D)")
         else:
             pca = PCA(n_components=3)
             coords = pca.fit_transform(Xs)
             dfs["PC1"], dfs["PC2"], dfs["PC3"] = coords[:,0], coords[:,1], coords[:,2]
-            st.write("3-D PCA: drag to rotate.")
+            st.write("3-D PCA: drag to rotate view.")
             fig = px.scatter_3d(dfs, x="PC1", y="PC2", z="PC3",
                                 color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                                labels={"color":"Anomaly"}, title="PCA Projection (3D)")
+                                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2","PC3":"PC3"},
+                                title="PCA Projection (3D)")
+
         fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-# ─── Tab 5: Live Streaming Feed ───────────────────────────────────────────────────
+# ─── Tab 5: Timeline ─────────────────────────────────────────────────────────────
 with tabs[4]:
-    st.header("⚡ Real-Time Streaming Feed")
+    st.header("📈 Anomaly Timeline")
     if "last_df" not in st.session_state:
-        st.info("Run a prediction first to populate data.")
+        st.info("Upload & predict to see timeline.")
     else:
-        # initialize
-        if "live_idx" not in st.session_state:
-            st.session_state.live_idx = 0
-        if "live_data" not in st.session_state:
-            st.session_state.live_data = pd.DataFrame(columns=["timestamp","anomaly"])
-        if "streaming" not in st.session_state:
-            st.session_state.streaming = False
-
-        speed = st.slider("Update interval (sec)", 0.1, 5.0, 1.0, step=0.1)
-        col1, col2 = st.columns(2)
-        if col1.button("▶️ Start Streaming"):
-            st.session_state.streaming = True
-        if col2.button("⏹ Stop Streaming"):
-            st.session_state.streaming = False
-
-        placeholder = st.empty()
-
-        if st.session_state.streaming:
-            df_stream = st.session_state["last_df"]
-            if st.session_state.live_idx < len(df_stream):
-                row = df_stream.iloc[st.session_state.live_idx]
-                Xr = scaler.transform([row[train_cols].values])
-                # use same model choice & thresh as before
-                mc = st.session_state["last_model"]
-                if mc == "Isolation Forest":
-                    pr = predict_iso(Xr)[0]
-                elif mc == "Autoencoder":
-                    _, pr = predict_ae(Xr, st.session_state["ae_thresh"]); pr = pr[0]
-                elif mc == "Local Outlier Factor":
-                    pr = predict_lof(Xr)[0]
-                elif mc == "Hybrid – Union":
-                    i, = predict_iso(Xr); _, a = predict_ae(Xr, st.session_state["ae_thresh"]); pr = int(i or a)
-                else:
-                    i, = predict_iso(Xr); _, a = predict_ae(Xr, st.session_state["ae_thresh"]); pr = int(i and a)
-
-                now = datetime.now()
-                st.session_state.live_data = pd.concat([
-                    st.session_state.live_data,
-                    pd.DataFrame([{"timestamp":now, "anomaly":pr}])
-                ], ignore_index=True)
-                st.session_state.live_idx += 1
-            else:
-                st.info("📡 End of stream reached.")
-                st.session_state.streaming = False
-
-            fig = px.line(
-                st.session_state.live_data,
-                x="timestamp", y="anomaly",
-                title="Anomalies over Time (Streaming)"
-            )
-            placeholder.plotly_chart(fig, use_container_width=True)
-            time.sleep(speed)
-            st.experimental_rerun()
-
+        df = st.session_state["last_df"]
+        if "timestamp" not in df.columns:
+            st.error("No timestamp column found. Please include a datetime column named `timestamp`.")
         else:
-            st.write("Press **Start Streaming** to begin.")
-            if not st.session_state.live_data.empty:
+            df_ts = df.copy()
+            df_ts["timestamp"] = pd.to_datetime(df_ts["timestamp"])
+            fig = px.line(df_ts, x="timestamp", y="anomaly", title="Anomalies Over Time")
+            st.plotly_chart(fig, use_container_width=True)
+
+# ─── Tab 6: Live Feed ────────────────────────────────────────────────────────────
+with tabs[5]:
+    st.header("⚡ Real-Time Streaming Feed")
+    speed = st.sidebar.slider("Update interval (sec)", 0.1, 5.0, 1.0, 0.1)
+
+    if "streaming" not in st.session_state:
+        st.session_state.streaming = False
+    if "stream_idx" not in st.session_state:
+        st.session_state.stream_idx = 0
+    if "stream_data" not in st.session_state:
+        st.session_state.stream_data = pd.DataFrame(columns=["timestamp","anomaly"])
+
+    start_btn, stop_btn = st.columns(2)
+    if start_btn.button("▶️ Start Streaming"):
+        st.session_state.streaming = True
+        st.session_state.stream_idx = 0
+        st.session_state.stream_data = pd.DataFrame(columns=["timestamp","anomaly"])
+    if stop_btn.button("⏹ Stop Streaming"):
+        st.session_state.streaming = False
+
+    if st.session_state.streaming:
+        placeholder = st.empty()
+        if "last_df" not in st.session_state:
+            st.warning("Please upload & predict first.")
+        else:
+            df = st.session_state["last_df"]
+            idx = st.session_state.stream_idx
+            if idx >= len(df):
+                st.info("End of data stream.")
+                st.session_state.streaming = False
+            else:
+                row = df.iloc[idx]
+                ts  = datetime.now()
+                an  = int(row["anomaly"])
+                # append
+                new = pd.DataFrame({"timestamp":[ts],"anomaly":[an]})
+                st.session_state.stream_data = pd.concat(
+                    [st.session_state.stream_data, new],
+                    ignore_index=True
+                )
+                st.session_state.stream_idx += 1
+
                 fig = px.line(
-                    st.session_state.live_data,
+                    st.session_state.stream_data,
                     x="timestamp", y="anomaly",
-                    title="Anomalies over Time (Streaming)"
+                    title="Anomalies Over Time (Streaming)",
+                    markers=True
                 )
                 placeholder.plotly_chart(fig, use_container_width=True)
+                time.sleep(speed)
+                st.rerun()
+    else:
+        st.write("Press **Start Streaming** to begin.")
