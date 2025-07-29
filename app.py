@@ -9,7 +9,6 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from tensorflow.keras.models import load_model
-import shap
 
 # ─── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Network Traffic Anomaly Detection", layout="wide")
@@ -72,7 +71,7 @@ with st.sidebar.expander("📘 About This Tool"):
     - 🧠 Autoencoder (Deep Learning)
     - 🗞 LOF (Local Density)
 
-    Hybrid modes improve robustness. Built with **scikit-learn, TensorFlow, Streamlit, SHAP**.
+    Hybrid modes improve robustness. Built with **scikit-learn, TensorFlow, Streamlit**.
     """)
 
 # ─── Load Artifacts ───────────────────────────────────────────────────────────────
@@ -121,7 +120,6 @@ def preprocess_raw_kdd(buf, nrows):
             df[c] = 0
     return df[train_cols], raw_meta
 
-# Prediction functions
 def predict_iso(X):
     p = iso_model.predict(X)
     return np.where(p==1, 0, 1)
@@ -189,9 +187,11 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state.last_meta = None
 
+        # Re-fit models
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
+        # Make predictions
         if model_choice=="Isolation Forest":
             preds = predict_iso(X)
         elif model_choice=="Autoencoder":
@@ -210,6 +210,7 @@ with tabs[0]:
         st.session_state.last_model = model_choice
         st.session_state.ae_thresh  = ae_thresh
 
+        # Results
         st.markdown("### 📈 Anomaly Results")
         st.dataframe(df.head(10), use_container_width=True)
 
@@ -264,9 +265,6 @@ with tabs[2]:
     choice = st.selectbox("Explain model:", [
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
-    df = st.session_state.last_df
-    X_all = scaler.transform(df[train_cols].values) if df is not None else None
-
     if choice=="Isolation Forest":
         st.write("Global SHAP importances for Isolation Forest.")
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
@@ -277,8 +275,10 @@ with tabs[2]:
 
     elif choice=="Autoencoder":
         st.write("Top features by autoencoder reconstruction error.")
-        rec= ae_model.predict(X_all)
-        errs = pd.Series(np.mean((X_all-rec)**2,axis=0), index=train_cols)
+        df = st.session_state.last_df
+        X  = scaler.transform(df[train_cols].values)
+        rec= ae_model.predict(X)
+        errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
         top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
         fig = px.bar(top, x="error", y="feature", orientation="h",
                      labels={"error":"MSE"})
@@ -287,22 +287,12 @@ with tabs[2]:
 
     else:
         st.write("LOF score distribution (lower = more anomalous).")
-        scores = lof_scores(X_all)
+        df = st.session_state.last_df
+        X  = scaler.transform(df[train_cols].values)
+        scores = lof_scores(X)
         fig = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         fig.update_layout(paper_bgcolor='white', plot_bgcolor='white', font_color='black')
         st.plotly_chart(fig, use_container_width=True)
-
-    # ─── Per-Record Explainability ─────────────────────────────────────────────────
-    if df is not None:
-        anomalies = df[df["anomaly"]==1]
-        if not anomalies.empty:
-            idx = st.selectbox("Select anomaly index:", anomalies.index.tolist())
-            record = X_all[idx].reshape(1, -1)
-            explainer = shap.Explainer(iso_model, X_all)
-            shap_vals = explainer(record)
-            st.markdown("#### 🔍 Root-Cause Waterfall Plot")
-            fig_w = shap.plots.waterfall(shap_vals[0], show=False)
-            st.pyplot(fig_w)
 
 # ─── Tab 4: Embedding ────────────────────────────────────────────────────────────
 with tabs[3]:
