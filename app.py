@@ -11,21 +11,20 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from tensorflow.keras.models import load_model
 
-# ─── Plotly global style (text always visible) ──────────────────────────────────
-pio.templates.default = "plotly_white"           # white chart background
-px.defaults.template  = "plotly_white"
+# ─── Plotly: force white background + black text for all charts ────────────────
+pio.templates.default = "plotly_white"
+pio.templates["plotly_white"].layout.font.color = "black"
+px.defaults.template = "plotly_white"
 px.defaults.color_discrete_sequence = px.colors.qualitative.Safe
-px.defaults.color_continuous_scale  = px.colors.sequential.Viridis
-# all fonts black on white figure
-px.defaults.layout.font_color = "black"
+px.defaults.color_continuous_scale = px.colors.sequential.Viridis
 
 # ─── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Network Traffic Anomaly Detection", layout="wide")
 
-# ─── Custom UI Styling (dark Streamlit, but charts stay white) ──────────────────
+# ─── Custom UI Styling ─────────────────────────────────────────────────────────
 st.markdown("""
     <style>
-        html, body, [class*="css"]  {
+        html, body, [class*="css"] {
             font-family: 'Segoe UI', sans-serif;
             background-color: #0f1117;
             color: #e1e1e1;
@@ -33,18 +32,30 @@ st.markdown("""
         .stApp {
             background-color: #0f1117;
         }
-        h1, h2, h3 { color: #00e676; }
-        .block-container { padding-top: 2rem; }
+        h1, h2, h3 {
+            color: #00e676;
+        }
+        .block-container {
+            padding-top: 2rem;
+        }
         .stButton>button {
-            background-color: #1f7a8c; color: white; border-radius: 8px;
+            background-color: #1f7a8c;
+            color: white;
+            border-radius: 8px;
             padding: 0.5em 1em;
         }
         .stDownloadButton>button {
             background: linear-gradient(to right, #00e676, #1de9b6);
-            color: black; font-weight: bold; border-radius: 10px;
+            color: black;
+            font-weight: bold;
+            border-radius: 10px;
         }
-        .stSidebar { background-color: #1e1e2d !important; }
-        .stSlider > div[role='slider'] { background: #00e676 !important; }
+        .stSidebar {
+            background-color: #1e1e2d !important;
+        }
+        .stSlider > div[role='slider'] {
+            background: #00e676 !important;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -71,7 +82,7 @@ with st.sidebar.expander("📘 About This Tool"):
     Hybrid modes improve robustness. Built with **scikit-learn, TensorFlow, Streamlit**.
     """)
 
-# ─── Load Artifacts ─────────────────────────────────────────────────────────────
+# ─── Load Artifacts ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_artifacts():
     iso       = joblib.load("iso_model.pkl")
@@ -84,10 +95,10 @@ def load_artifacts():
 
 iso_model, ae_model, lof_model, scaler, train_cols, iso_shap_imp = load_artifacts()
 
-# ─── Helpers ────────────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────────
 def detect_compression(buf):
     name = getattr(buf, "name", "").lower()
-    if name.endswith((".gz", "gzip")): return "gzip"
+    if name.endswith((".gz","gzip")): return "gzip"
     if name.endswith(".zip"):          return "zip"
     return None
 
@@ -118,20 +129,20 @@ def preprocess_raw_kdd(buf, nrows):
     return df[train_cols], raw_meta
 
 def predict_iso(X):
-    return np.where(iso_model.predict(X) == 1, 0, 1)
+    return np.where(iso_model.predict(X)==1, 0, 1)
 
 def predict_ae(X, thresh):
     rec = ae_model.predict(X)
-    mse = np.mean((X - rec) ** 2, axis=1)
-    return mse, np.where(mse > thresh, 1, 0)
+    mse = np.mean((X-rec)**2, axis=1)
+    return mse, np.where(mse>thresh, 1, 0)
 
 def predict_lof(X):
-    return np.where(lof_model.predict(X) == 1, 0, 1)
+    return np.where(lof_model.predict(X)==1, 0, 1)
 
 def lof_scores(X):
     return lof_model.decision_function(X)
 
-# ─── Initialize Session State ───────────────────────────────────────────────────
+# ─── Initialize Session State ────────────────────────────────────────────────────
 for key, val in {
     "last_df": None,
     "last_meta": None,
@@ -140,37 +151,38 @@ for key, val in {
     "streaming": False,
     "stream_chart": None
 }.items():
-    st.session_state.setdefault(key, val)
+    if key not in st.session_state:
+        st.session_state[key] = val
 
-# ─── Main Tabs ──────────────────────────────────────────────────────────────────
+# ─── Main Tabs ────────────────────────────────────────────────────────────────────
 tabs = st.tabs([
     "🔍 Predict", "📊 EDA", "🧠 Explain",
     "🔬 Embedding", "⚡ Live Feed", "📚 Education"
 ])
 
-# ─── Tab 1: Predict ─────────────────────────────────────────────────────────────
+# ─── Tab 1: Predict ───────────────────────────────────────────────────────────────
 with tabs[0]:
     st.sidebar.header("Settings")
-    upload_type  = st.sidebar.radio("Upload type:", ("Raw KDD data", "Preprocessed CSV"))
+    upload_type  = st.sidebar.radio("Upload type:", ("Raw KDD data","Preprocessed CSV"))
     sample_rows  = st.sidebar.slider("Rows to sample (raw)", 10000, 200000, 50000, 10000)
     iso_cont     = st.sidebar.slider("IForest contamination", 0.01, 0.5, 0.1, 0.01)
     lof_cont     = st.sidebar.slider("LOF contamination",    0.01, 0.5, 0.02, 0.01)
     ae_thresh    = st.sidebar.slider("AE threshold",         0.0, 1.0, 0.02, 0.005)
     model_choice = st.sidebar.selectbox("Model:", [
-        "Isolation Forest", "Autoencoder", "Local Outlier Factor",
-        "Hybrid – Union", "Hybrid – Intersection"
+        "Isolation Forest","Autoencoder","Local Outlier Factor",
+        "Hybrid – Union","Hybrid – Intersection"
     ])
 
     st.markdown("### 📂 Upload & Preprocess Your Data")
     uploaded = st.file_uploader(
-        "Upload dataset", type=["csv", "gz", "zip"],
+        "Upload dataset", type=["csv","gz","zip"],
         help="Raw KDD (.csv/.gz/.zip) or preprocessed CSV"
     )
-
-    if uploaded:
-        # Pre-processing
-        if upload_type == "Raw KDD data":
-            with st.spinner(f"🚀 Processing first {sample_rows:,} rows..."):
+    if not uploaded:
+        st.info("Please upload your dataset to begin.")
+    else:
+        if upload_type=="Raw KDD data":
+            with st.spinner(f"🚀 Processing first {sample_rows:,} rows... Please wait..."):
                 df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
@@ -178,109 +190,101 @@ with tabs[0]:
         else:
             comp = detect_compression(uploaded)
             df = pd.read_csv(uploaded, compression=comp)
-            X  = df.reindex(columns=train_cols).fillna(0).values
+            X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state.last_meta = None
 
-        # Re-fit unsupervised models with user contamination
+        # Re-fit models
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
-        # Inference
-        if model_choice == "Isolation Forest":
+        # Make predictions
+        if model_choice=="Isolation Forest":
             preds = predict_iso(X)
-        elif model_choice == "Autoencoder":
+        elif model_choice=="Autoencoder":
             mse, preds = predict_ae(X, ae_thresh)
-        elif model_choice == "Local Outlier Factor":
+        elif model_choice=="Local Outlier Factor":
             preds = predict_lof(X)
-        elif model_choice == "Hybrid – Union":
-            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
+        elif model_choice=="Hybrid – Union":
+            iso_p, ae_p = predict_iso(X), predict_ae(X, ae_thresh)[1]
             preds = np.logical_or(iso_p, ae_p).astype(int)
-        else:  # Hybrid – Intersection
-            iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
+        else:
+            iso_p, ae_p = predict_iso(X), predict_ae(X, ae_thresh)[1]
             preds = np.logical_and(iso_p, ae_p).astype(int)
 
         df["anomaly"] = preds
-        st.session_state.update({
-            "last_df": df, "last_model": model_choice, "ae_thresh": ae_thresh
-        })
+        st.session_state.last_df    = df
+        st.session_state.last_model = model_choice
+        st.session_state.ae_thresh  = ae_thresh
 
-        # Results
         st.markdown("### 📈 Anomaly Results")
         st.dataframe(df.head(10), use_container_width=True)
 
-        if model_choice in ("Autoencoder", "Hybrid – Union", "Hybrid – Intersection"):
+        if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
             rec      = ae_model.predict(X)
-            feat_err = pd.Series(np.mean((X - rec) ** 2, axis=0), index=train_cols)
+            feat_err = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
             st.subheader("Top AE Reconstruction Errors")
             st.bar_chart(feat_err.nlargest(10))
 
         st.subheader("Anomaly Distribution")
-        st.bar_chart(df["anomaly"].map({0: "Normal", 1: "Attack"}).value_counts())
+        st.bar_chart(df["anomaly"].map({0:"Normal",1:"Attack"}).value_counts())
 
-        st.download_button("⬇️ Download Results",
-                           df.to_csv(index=False).encode(),
-                           "results.csv", "text/csv")
-    else:
-        st.info("Please upload your dataset to begin.")
+        csv = df.to_csv(index=False).encode()
+        st.download_button("⬇️ Download Results", csv, "results.csv", "text/csv")
 
-# ─── Tab 2: EDA ─────────────────────────────────────────────────────────────────
+# ─── Tab 2: EDA ──────────────────────────────────────────────────────────────────
 with tabs[1]:
     st.markdown("### 📊 Exploratory Data Analysis")
-    if (df := st.session_state.last_df) is not None:
+    if st.session_state.last_df is None:
+        st.info("Upload & predict to see EDA.")
+    else:
+        df       = st.session_state.last_df
         raw_meta = st.session_state.last_meta
 
         if raw_meta is not None:
             st.subheader("Protocol Breakdown")
             proto = raw_meta.copy()
-            proto["anomaly"] = df["anomaly"].map({0: "Normal", 1: "Attack"})
+            proto["anomaly"] = df["anomaly"].map({0:"Normal",1:"Attack"})
             fig1 = px.bar(proto, x="protocol_type", color="anomaly", barmode="group",
-                          labels={"anomaly": "0=Normal,1=Attack"})
+                          labels={"anomaly":"0=Normal,1=Attack"})
             st.plotly_chart(fig1, use_container_width=True)
 
         st.subheader("Numeric Correlations")
-        num_cols = ["duration", "src_bytes", "dst_bytes", "count", "srv_count"]
+        num_cols = ["duration","src_bytes","dst_bytes","count","srv_count"]
         corr = df[num_cols].corr()
-        fig2, ax = plt.subplots(figsize=(6, 5))
-        sns.heatmap(corr, annot=True, cmap="vlag", ax=ax,
-                    annot_kws={"color": "black"})
+        fig2, ax = plt.subplots(figsize=(6,5))
+        sns.heatmap(corr, annot=True, cmap="vlag", ax=ax, annot_kws={"color":"black"})
         st.pyplot(fig2)
 
         st.subheader("Data Distributions")
-        fig3, axes = plt.subplots(1, 2, figsize=(12, 4))
+        fig3, axes = plt.subplots(1,2,figsize=(12,4))
         sns.boxplot(x=df["anomaly"], y=df["src_bytes"], ax=axes[0])
         axes[0].set_title("src_bytes")
         sns.boxplot(x=df["anomaly"], y=df["dst_bytes"], ax=axes[1])
         axes[1].set_title("dst_bytes")
         st.pyplot(fig3)
-    else:
-        st.info("Upload & predict to see EDA.")
 
 # ─── Tab 3: Explain ─────────────────────────────────────────────────────────────
 with tabs[2]:
     st.markdown("### 🧠 Explainability")
     choice = st.selectbox("Explain model:", [
-        "Isolation Forest", "Autoencoder", "Local Outlier Factor"
+        "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
-
-    if choice == "Isolation Forest":
+    if choice=="Isolation Forest":
         st.write("Global SHAP importances for Isolation Forest.")
-        shap_df = iso_shap_imp.reset_index().rename(
-            columns={"index": "feature", 0: "importance"})
+        shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
         fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
-                     labels={"importance": "Mean |SHAP value|"})
-        fig.update_layout(yaxis_categoryorder="total ascending")
+                     labels={"importance":"Mean |SHAP value|"})
         st.plotly_chart(fig, use_container_width=True)
 
-    elif choice == "Autoencoder":
+    elif choice=="Autoencoder":
         st.write("Top features by autoencoder reconstruction error.")
         df = st.session_state.last_df
         X  = scaler.transform(df[train_cols].values)
-        rec = ae_model.predict(X)
-        errs = pd.Series(np.mean((X - rec) ** 2, axis=0), index=train_cols)
-        top = errs.nlargest(10).reset_index().rename(
-            columns={"index": "feature", 0: "error"})
+        rec= ae_model.predict(X)
+        errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
+        top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
         fig = px.bar(top, x="error", y="feature", orientation="h",
-                     labels={"error": "MSE"})
+                     labels={"error":"MSE"})
         st.plotly_chart(fig, use_container_width=True)
 
     else:
@@ -288,58 +292,57 @@ with tabs[2]:
         df = st.session_state.last_df
         X  = scaler.transform(df[train_cols].values)
         scores = lof_scores(X)
-        fig = px.histogram(scores, nbins=50, labels={"value": "LOF score"})
+        fig = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         st.plotly_chart(fig, use_container_width=True)
 
-# ─── Tab 4: Embedding ───────────────────────────────────────────────────────────
+# ─── Tab 4: Embedding ────────────────────────────────────────────────────────────
 with tabs[3]:
     st.markdown("### 🔬 PCA Embedding of Network Traffic")
-    if (df := st.session_state.last_df) is not None:
-        X = scaler.transform(df[train_cols].values)
-        idxs = np.random.choice(len(X), min(len(X), 5000), replace=False)
+    if st.session_state.last_df is None:
+        st.info("Upload & predict to see embedding.")
+    else:
+        df = st.session_state.last_df
+        X  = scaler.transform(df[train_cols].values)
+        idxs = np.random.choice(len(X), min(len(X),5000), replace=False)
         Xs, dfs = X[idxs], df.iloc[idxs].copy()
-
-        dim = st.radio("Projection dimension:", ("2D", "3D"))
-        if dim == "2D":
+        dim = st.radio("Projection dimension:", ("2D","3D"))
+        if dim=="2D":
             coords = PCA(2).fit_transform(Xs)
-            dfs["PC1"], dfs["PC2"] = coords[:, 0], coords[:, 1]
+            dfs["PC1"], dfs["PC2"] = coords[:,0], coords[:,1]
             fig = px.scatter(dfs, x="PC1", y="PC2",
-                             color=dfs["anomaly"].map({0: "Normal", 1: "Attack"}),
+                             color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
                              title="PCA (2D)")
         else:
             coords = PCA(3).fit_transform(Xs)
-            dfs["PC1"], dfs["PC2"], dfs["PC3"] = coords[:, 0], coords[:, 1], coords[:, 2]
+            dfs["PC1"], dfs["PC2"], dfs["PC3"] = coords[:,0], coords[:,1], coords[:,2]
             fig = px.scatter_3d(dfs, x="PC1", y="PC2", z="PC3",
-                                color=dfs["anomaly"].map({0: "Normal", 1: "Attack"}),
+                                color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
                                 title="PCA (3D)")
-        fig.update_layout(margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Upload & predict to see embedding.")
 
-# ─── Tab 5: Live Feed ───────────────────────────────────────────────────────────
+# ─── Tab 5: Live Feed ────────────────────────────────────────────────────────────
 with tabs[4]:
     st.markdown("### ⚡ Real-Time Streaming Feed")
-    interval = st.sidebar.slider("Update interval (sec)", 0.1, 5.0, 1.0, 0.1)
+    interval = st.sidebar.slider("Update interval (sec)", 0.1,5.0,1.0,0.1)
     if st.button("▶️ Start Streaming", key="start"):
         st.session_state.streaming = True
     if st.button("⏹ Stop Streaming", key="stop"):
         st.session_state.streaming = False
 
     placeholder = st.empty()
-    if st.session_state.streaming and (df := st.session_state.last_df) is not None:
+    if st.session_state.streaming and st.session_state.last_df is not None:
         chart = placeholder.line_chart(pd.DataFrame(columns=["anomaly"]))
         while st.session_state.streaming:
+            df = st.session_state.last_df
             idx = np.random.randint(len(df))
-            chart.add_rows(pd.DataFrame(
-                {"anomaly": [df.iloc[idx]["anomaly"]]},
-                index=[pd.Timestamp.now()]
-            ))
+            new = pd.DataFrame({"anomaly":[df.iloc[idx]["anomaly"]]},
+                               index=[pd.Timestamp.now()])
+            chart.add_rows(new)
             time.sleep(interval)
     else:
         placeholder.write("Press ▶️ to stream anomaly flags over time.")
 
-# ─── Tab 6: Education ───────────────────────────────────────────────────────────
+# ─── Tab 6: Education ────────────────────────────────────────────────────────────
 with tabs[5]:
     st.markdown("### 📚 Educational Insights")
     st.markdown("""
@@ -350,22 +353,22 @@ with tabs[5]:
         st.write("""
         **Idea:** Randomly partition features; anomalies are easier to isolate.  
         **Pros:** Fast, unsupervised, no distributional assumptions.  
-        **Cons:** Sensitive to contamination setting; may miss subtle anomalies.
+        **Cons:** Sensitive to contamination; may miss subtle anomalies.
         """)
     with st.expander("Autoencoder"):
         st.write("""
         **Idea:** Compress–reconstruct input; high reconstruction error ⇒ anomaly.  
         **Pros:** Learns nonlinear patterns; adaptive thresholds.  
-        **Cons:** Needs enough normal data; MSE threshold tuning is crucial.
+        **Cons:** Needs enough normal data; threshold tuning is crucial.
         """)
     with st.expander("Local Outlier Factor"):
         st.write("""
-        **Idea:** Compare local density to neighbours; low-density points ⇒ outliers.  
+        **Idea:** Compare local density; low-density points ⇒ outliers.  
         **Pros:** Captures local structure; no train/inference split.  
-        **Cons:** O(n²) complexity; `n_neighbors` heavily impacts sensitivity.
+        **Cons:** O(n²) complexity; `n_neighbors` impacts sensitivity.
         """)
     with st.expander("Hybrid Modes"):
         st.write("""
-        **Union (OR):** Flag if *any* model fires → high recall, more noise.  
-        **Intersection (AND):** Flag only if *all* models agree → high precision, may miss edge cases.
+        **Union:** Flag if *any* model fires → high recall, more noise.  
+        **Intersection:** Flag only if *all* models agree → high precision, may miss edge cases.
         """)
