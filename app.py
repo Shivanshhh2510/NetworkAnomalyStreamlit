@@ -10,7 +10,69 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from tensorflow.keras.models import load_model
 
+# ─── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Network Traffic Anomaly Detection", layout="wide")
+
+# ─── Custom UI Styling ─────────────────────────────────────────────────────────
+st.markdown("""
+    <style>
+        html, body, [class*="css"]  {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #0f1117;
+            color: #e1e1e1;
+        }
+        .stApp {
+            background-color: #0f1117;
+        }
+        h1, h2, h3 {
+            color: #00e676;
+        }
+        .block-container {
+            padding-top: 2rem;
+        }
+        .stButton>button {
+            background-color: #1f7a8c;
+            color: white;
+            border-radius: 8px;
+            padding: 0.5em 1em;
+        }
+        .stDownloadButton>button {
+            background: linear-gradient(to right, #00e676, #1de9b6);
+            color: black;
+            font-weight: bold;
+            border-radius: 10px;
+        }
+        .stSidebar {
+            background-color: #1e1e2d !important;
+        }
+        .stSlider > div[role='slider'] {
+            background: #00e676 !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# ─── Header ─────────────────────────────────────────────────────────────────────
+st.markdown("""
+    <h1 style='text-align: center; color: #00e676; font-weight: bold;'>
+        🚨 Network Traffic Anomaly Detection Dashboard
+    </h1>
+    <p style='text-align: center; font-size: 16px; color: #ccc;'>
+        Powered by Autoencoder • Isolation Forest • LOF • PCA • SHAP
+    </p>
+""", unsafe_allow_html=True)
+
+# ─── Sidebar Expander ───────────────────────────────────────────────────────────
+with st.sidebar.expander("📘 About This Tool"):
+    st.markdown("""
+    This dashboard uses **unsupervised ML** to detect intrusions in KDD'99 traffic data.
+
+    Models:
+    - 📊 Isolation Forest
+    - 🧠 Autoencoder (Deep Learning)
+    - 🗞 LOF (Local Density)
+
+    Hybrid modes improve robustness. Built with **scikit-learn, TensorFlow, Streamlit**.
+    """)
 
 # ─── Load Artifacts ───────────────────────────────────────────────────────────────
 @st.cache_resource
@@ -105,7 +167,7 @@ with tabs[0]:
         "Hybrid – Union","Hybrid – Intersection"
     ])
 
-    st.title("🚨 Network Traffic Anomaly Detection")
+    st.markdown("### 📂 Upload & Preprocess Your Data")
     uploaded = st.file_uploader(
         "Upload dataset", type=["csv","gz","zip"],
         help="Raw KDD (.csv/.gz/.zip) or preprocessed CSV"
@@ -113,10 +175,9 @@ with tabs[0]:
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
-        # Preprocess
         if upload_type=="Raw KDD data":
-            st.warning(f"Processing first {sample_rows:,} rows…")
-            df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
+            with st.spinner(f"🚀 Processing first {sample_rows:,} rows... Please wait..."):
+                df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
             st.session_state.last_meta = raw_meta
@@ -126,11 +187,11 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state.last_meta = None
 
-        # Re-fit if needed
+        # Re-fit models
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
-        # Predict
+        # Make predictions
         if model_choice=="Isolation Forest":
             preds = predict_iso(X)
         elif model_choice=="Autoencoder":
@@ -149,8 +210,8 @@ with tabs[0]:
         st.session_state.last_model = model_choice
         st.session_state.ae_thresh  = ae_thresh
 
-        # Show results
-        st.subheader("Sample Results")
+        # Results
+        st.markdown("### 📈 Anomaly Results")
         st.dataframe(df.head(10), use_container_width=True)
 
         if model_choice in ("Autoencoder","Hybrid – Union","Hybrid – Intersection"):
@@ -167,7 +228,7 @@ with tabs[0]:
 
 # ─── Tab 2: EDA ──────────────────────────────────────────────────────────────────
 with tabs[1]:
-    st.header("📊 Exploratory Data Analysis")
+    st.markdown("### 📊 Exploratory Data Analysis")
     if st.session_state.last_df is None:
         st.info("Upload & predict to see EDA.")
     else:
@@ -180,6 +241,7 @@ with tabs[1]:
             proto["anomaly"] = df["anomaly"].map({0:"Normal",1:"Attack"})
             fig1 = px.bar(proto, x="protocol_type", color="anomaly", barmode="group",
                           labels={"anomaly":"0=Normal,1=Attack"})
+            fig1.update_layout(paper_bgcolor='white', plot_bgcolor='white', font_color='black')
             st.plotly_chart(fig1, use_container_width=True)
 
         st.subheader("Numeric Correlations")
@@ -199,7 +261,7 @@ with tabs[1]:
 
 # ─── Tab 3: Explain ─────────────────────────────────────────────────────────────
 with tabs[2]:
-    st.header("🧠 Explainability")
+    st.markdown("### 🧠 Explainability")
     choice = st.selectbox("Explain model:", [
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
@@ -208,7 +270,7 @@ with tabs[2]:
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
         fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
                      labels={"importance":"Mean |SHAP value|"})
-        fig.update_layout(yaxis_categoryorder="total ascending", plot_bgcolor="white")
+        fig.update_layout(yaxis_categoryorder="total ascending", paper_bgcolor='white', plot_bgcolor='white', font_color='black')
         st.plotly_chart(fig, use_container_width=True)
 
     elif choice=="Autoencoder":
@@ -220,6 +282,7 @@ with tabs[2]:
         top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
         fig = px.bar(top, x="error", y="feature", orientation="h",
                      labels={"error":"MSE"})
+        fig.update_layout(paper_bgcolor='white', plot_bgcolor='white', font_color='black')
         st.plotly_chart(fig, use_container_width=True)
 
     else:
@@ -228,11 +291,12 @@ with tabs[2]:
         X  = scaler.transform(df[train_cols].values)
         scores = lof_scores(X)
         fig = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
+        fig.update_layout(paper_bgcolor='white', plot_bgcolor='white', font_color='black')
         st.plotly_chart(fig, use_container_width=True)
 
 # ─── Tab 4: Embedding ────────────────────────────────────────────────────────────
 with tabs[3]:
-    st.header("🔬 PCA Embedding of Network Traffic")
+    st.markdown("### 🔬 PCA Embedding of Network Traffic")
     if st.session_state.last_df is None:
         st.info("Upload & predict to see embedding.")
     else:
@@ -255,13 +319,13 @@ with tabs[3]:
             fig = px.scatter_3d(dfs, x="PC1", y="PC2", z="PC3",
                                 color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
                                 title="PCA (3D)")
-        fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+        fig.update_layout(margin=dict(l=0,r=0,t=40,b=0), paper_bgcolor='white', plot_bgcolor='white', font_color='black')
         st.plotly_chart(fig, use_container_width=True)
 
 # ─── Tab 5: Live Feed ────────────────────────────────────────────────────────────
 with tabs[4]:
-    st.header("⚡ Real-Time Streaming Feed")
-    interval = st.slider("Update interval (sec)", 0.1, 5.0, 1.0, 0.1)
+    st.markdown("### ⚡ Real-Time Streaming Feed")
+    interval = st.sidebar.slider("Update interval (sec)", 0.1, 5.0, 1.0, 0.1)
     if st.button("▶️ Start Streaming", key="start"):
         st.session_state.streaming = True
     if st.button("⏹ Stop Streaming", key="stop"):
@@ -270,7 +334,6 @@ with tabs[4]:
     placeholder = st.empty()
     if st.session_state.streaming and st.session_state.last_df is not None:
         chart = placeholder.line_chart(pd.DataFrame(columns=["anomaly"]))
-        # seed initial time zero
         while st.session_state.streaming:
             df = st.session_state.last_df
             idx = np.random.randint(len(df))
@@ -285,7 +348,7 @@ with tabs[4]:
 
 # ─── Tab 6: Education ────────────────────────────────────────────────────────────
 with tabs[5]:
-    st.header("📚 Educational Insights")
+    st.markdown("### 📚 Educational Insights")
     st.markdown("""
     Dive deep into the mechanics of each anomaly detector and hybrid strategy.
     Each section below unfolds key intuition, workflows, pros & cons, and real-world tips.
@@ -314,10 +377,9 @@ with tabs[5]:
     with st.expander("Hybrid Models"):
         st.write("""
         **Union** (🔁): Flag anomaly if **any** model says so  
-        &rarr; **High recall**, catch more attacks, risk more false alarms.  
+        → **High recall**, catch more attacks, risk more false alarms.  
 
         **Intersection** (🔁): Flag anomaly only if **all** models agree  
-        &rarr; **High precision**, fewer false alarms, risk missing subtle anomalies.  
+        → **High precision**, fewer false alarms, risk missing subtle anomalies.  
         """)
     st.markdown("**Real-World Tip:** Test both strategies to find your best trade-off!")
-
