@@ -80,11 +80,11 @@ tabs = st.tabs(["🔍 Predict", "📊 EDA", "🧠 Explain", "🔬 Embedding", "�
 with tabs[0]:
     st.sidebar.header("Settings")
     upload_type  = st.sidebar.radio("Upload type:", ("Raw KDD data","Preprocessed CSV"))
-    sample_rows  = st.sidebar.slider("Rows to sample (raw)", 10000, 200000, 50000, 10000)
-    iso_cont     = st.sidebar.slider("IForest contamination", 0.01, 0.5, 0.1, 0.01)
-    lof_cont     = st.sidebar.slider("LOF contamination",    0.01, 0.5, 0.02, 0.01)
-    ae_thresh    = st.sidebar.slider("AE threshold",         0.0, 1.0, 0.02, 0.005)
-    model_choice = st.sidebar.selectbox("Model:", [
+    sample_rows  = st.sidebar.slider("Rows to sample (raw)",10000,200000,50000,10000)
+    iso_cont     = st.sidebar.slider("IForest contamination",0.01,0.5,0.1,0.01)
+    lof_cont     = st.sidebar.slider("LOF contamination",   0.01,0.5,0.02,0.01)
+    ae_thresh    = st.sidebar.slider("AE threshold",       0.0,1.0,0.02,0.005)
+    model_choice = st.sidebar.selectbox("Model:",[
         "Isolation Forest","Autoencoder","Local Outlier Factor",
         "Hybrid – Union","Hybrid – Intersection"
     ])
@@ -92,13 +92,12 @@ with tabs[0]:
     st.title("🚨 Network Traffic Anomaly Detection")
     uploaded = st.file_uploader(
         "Upload dataset", type=["csv","gz","zip"],
-        help="Raw KDD (.csv/.gz/.zip) or preprocessed CSV **with a `timestamp` column**"
+        help="Raw KDD (.csv/.gz/.zip) or preprocessed CSV"
     )
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
-        # 1) Preprocess
-        if upload_type == "Raw KDD data":
+        if upload_type=="Raw KDD data":
             st.warning(f"Processing first {sample_rows:,} rows of raw data…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
@@ -110,18 +109,18 @@ with tabs[0]:
             X = df.reindex(columns=train_cols).fillna(0).values
             st.session_state["last_meta"] = None
 
-        # 2) Refit models
+        # re-fit models
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
-        # 3) Predict
-        if model_choice == "Isolation Forest":
+        # predict
+        if model_choice=="Isolation Forest":
             preds = predict_iso(X)
-        elif model_choice == "Autoencoder":
+        elif model_choice=="Autoencoder":
             mse, preds = predict_ae(X, ae_thresh)
-        elif model_choice == "Local Outlier Factor":
+        elif model_choice=="Local Outlier Factor":
             preds = predict_lof(X)
-        elif model_choice == "Hybrid – Union":
+        elif model_choice=="Hybrid – Union":
             iso_p = predict_iso(X); _, ae_p = predict_ae(X, ae_thresh)
             preds = np.logical_or(iso_p, ae_p).astype(int)
         else:
@@ -133,7 +132,6 @@ with tabs[0]:
         st.session_state["last_model"] = model_choice
         st.session_state["ae_thresh"]  = ae_thresh
 
-        # Display results
         st.subheader("Sample Results")
         st.dataframe(df.head(10), use_container_width=True)
 
@@ -184,10 +182,10 @@ with tabs[1]:
 # ─── Tab 3: Explain ─────────────────────────────────────────────────────────────
 with tabs[2]:
     st.header("🧠 Explainability")
-    choice = st.selectbox("Explain model:", [
+    choice = st.selectbox("Explain model:",[
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
-    if choice == "Isolation Forest":
+    if choice=="Isolation Forest":
         st.write("Global SHAP importances for Isolation Forest decisions.")
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
         fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
@@ -195,12 +193,12 @@ with tabs[2]:
         fig.update_layout(yaxis_categoryorder="total ascending", plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
 
-    elif choice == "Autoencoder":
+    elif choice=="Autoencoder":
         st.write("Top features by autoencoder reconstruction error.")
-        df = st.session_state["last_df"]
-        X  = scaler.transform(df[train_cols].values)
-        rec= ae_model.predict(X)
-        errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
+        df2 = st.session_state["last_df"]
+        X2  = scaler.transform(df2[train_cols].values)
+        rec = ae_model.predict(X2)
+        errs = pd.Series(np.mean((X2-rec)**2,axis=0), index=train_cols)
         top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
         fig = px.bar(top, x="error", y="feature", orientation="h",
                      labels={"error":"Reconstruction MSE"})
@@ -208,9 +206,9 @@ with tabs[2]:
 
     else:
         st.write("LOF ‘normality’ score distribution (lower = more anomalous).")
-        df     = st.session_state["last_df"]
-        X      = scaler.transform(df[train_cols].values)
-        scores = lof_scores(X)
+        df3    = st.session_state["last_df"]
+        X3     = scaler.transform(df3[train_cols].values)
+        scores = lof_scores(X3)
         fig    = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         st.plotly_chart(fig, use_container_width=True)
 
@@ -220,13 +218,13 @@ with tabs[3]:
     if "last_df" not in st.session_state:
         st.info("Upload & predict to see embedding.")
     else:
-        df = st.session_state["last_df"]
-        X  = scaler.transform(df[train_cols].values)
+        df4 = st.session_state["last_df"]
+        X4  = scaler.transform(df4[train_cols].values)
 
-        n = min(len(X), 5000)
-        idxs = np.random.choice(len(X), n, replace=False)
-        Xs = X[idxs]
-        dfs = df.iloc[idxs].copy()
+        n = min(len(X4), 5000)
+        idxs = np.random.choice(len(X4), n, replace=False)
+        Xs  = X4[idxs]
+        dfs = df4.iloc[idxs].copy()
 
         dim = st.radio("Projection dimension:", ("2D", "3D"))
         if dim == "2D":
@@ -261,35 +259,26 @@ with tabs[4]:
     if "last_df" not in st.session_state:
         st.info("Upload & predict to see timeline.")
     else:
-        df = st.session_state["last_df"].copy()
-        if "timestamp" not in df.columns:
-            st.error("No `timestamp` column found. Please include a datetime column named `timestamp`.")
+        df5 = st.session_state["last_df"].copy()
+
+        if "timestamp" not in df5.columns:
+            st.warning("No `timestamp` column found → generating synthetic 1s-interval timestamps.")
+            df5["timestamp"] = pd.date_range(
+                start=pd.Timestamp.now(), periods=len(df5), freq="S"
+            )
         else:
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            df.set_index("timestamp", inplace=True)
+            # parse any existing timestamp column
+            df5["timestamp"] = pd.to_datetime(df5["timestamp"], errors="coerce")
 
-            # 1) Hourly anomaly rate
-            anomaly_rate = df["anomaly"].resample("1H").mean()
-            fig1 = px.line(
-                anomaly_rate,
-                labels={"value":"Anomaly Rate","timestamp":"Time"},
-                title="Hourly Anomaly Rate"
-            )
-            st.plotly_chart(fig1, use_container_width=True)
+        # aggregate anomalies per timestamp
+        timeline = df5.groupby("timestamp")["anomaly"] \
+                       .sum().reset_index(name="anomaly_count")
 
-            # 2) Day–Hour heatmap
-            df["hour"] = df.index.hour
-            df["date"] = df.index.date
-            pivot = (
-                df.groupby(["hour","date"])["anomaly"]
-                  .mean()
-                  .reset_index()
-                  .pivot(index="hour", columns="date", values="anomaly")
-            )
-            fig2 = px.imshow(
-                pivot,
-                labels={"x":"Date","y":"Hour","color":"Anomaly Rate"},
-                aspect="auto",
-                title="Anomaly Heatmap by Hour & Day"
-            )
-            st.plotly_chart(fig2, use_container_width=True)
+        fig = px.line(
+            timeline,
+            x="timestamp", y="anomaly_count",
+            title="Number of Anomalies Over Time",
+            labels={"anomaly_count":"Anomaly Count","timestamp":"Time"}
+        )
+        fig.update_layout(xaxis_title=None, yaxis_title=None, plot_bgcolor="white")
+        st.plotly_chart(fig, use_container_width=True)
