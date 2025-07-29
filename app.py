@@ -1,15 +1,14 @@
 import os
 import time
-from datetime import datetime
-import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-from tensorflow.keras.models import load_model
+import streamlit as st
 import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+from tensorflow.keras.models import load_model
 
 st.set_page_config(page_title="Network Traffic Anomaly Detection", layout="wide")
 
@@ -61,39 +60,47 @@ def preprocess_raw_kdd(buf, nrows):
 
 def predict_iso(X):
     p = iso_model.predict(X)
-    return np.where(p == 1, 0, 1)
+    return np.where(p==1, 0, 1)
 
 def predict_ae(X, thresh):
     rec = ae_model.predict(X)
-    mse = np.mean((X - rec) ** 2, axis=1)
-    return mse, np.where(mse > thresh, 1, 0)
+    mse = np.mean((X-rec)**2, axis=1)
+    return mse, np.where(mse>thresh, 1, 0)
 
 def predict_lof(X):
     p = lof_model.predict(X)
-    return np.where(p == 1, 0, 1)
+    return np.where(p==1, 0, 1)
 
 def lof_scores(X):
     return lof_model.decision_function(X)
 
-# ─── UI ───────────────────────────────────────────────────────────────────────────
+# ─── Initialize Session State ────────────────────────────────────────────────────
+for key, val in {
+    "last_df": None,
+    "last_meta": None,
+    "last_model": None,
+    "ae_thresh": 0.02,
+    "streaming": False,
+    "stream_chart": None
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
+# ─── Main Tabs ────────────────────────────────────────────────────────────────────
 tabs = st.tabs([
-    "🔍 Predict",
-    "📊 EDA",
-    "🧠 Explain",
-    "🔬 Embedding",
-    "🎓 Learn",
-    "⚡ Live Feed"
+    "🔍 Predict", "📊 EDA", "🧠 Explain",
+    "🔬 Embedding", "⚡ Live Feed", "📚 Education"
 ])
 
 # ─── Tab 1: Predict ───────────────────────────────────────────────────────────────
 with tabs[0]:
     st.sidebar.header("Settings")
     upload_type  = st.sidebar.radio("Upload type:", ("Raw KDD data","Preprocessed CSV"))
-    sample_rows  = st.sidebar.slider("Rows to sample (raw)",10000,200000,50000,10000)
-    iso_cont     = st.sidebar.slider("IForest contamination",0.01,0.5,0.1,0.01)
-    lof_cont     = st.sidebar.slider("LOF contamination",   0.01,0.5,0.02,0.01)
-    ae_thresh    = st.sidebar.slider("AE threshold",       0.0,1.0,0.02,0.005)
-    model_choice = st.sidebar.selectbox("Model:",[
+    sample_rows  = st.sidebar.slider("Rows to sample (raw)", 10000, 200000, 50000, 10000)
+    iso_cont     = st.sidebar.slider("IForest contamination", 0.01, 0.5, 0.1, 0.01)
+    lof_cont     = st.sidebar.slider("LOF contamination",    0.01, 0.5, 0.02, 0.01)
+    ae_thresh    = st.sidebar.slider("AE threshold",         0.0, 1.0, 0.02, 0.005)
+    model_choice = st.sidebar.selectbox("Model:", [
         "Isolation Forest","Autoencoder","Local Outlier Factor",
         "Hybrid – Union","Hybrid – Intersection"
     ])
@@ -106,24 +113,24 @@ with tabs[0]:
     if not uploaded:
         st.info("Please upload your dataset to begin.")
     else:
-        # 1) Preprocess
+        # Preprocess
         if upload_type=="Raw KDD data":
-            st.warning(f"Processing first {sample_rows:,} rows of raw data…")
+            st.warning(f"Processing first {sample_rows:,} rows…")
             df_proc, raw_meta = preprocess_raw_kdd(uploaded, sample_rows)
             X = scaler.transform(df_proc.values)
             df = df_proc.copy()
-            st.session_state["last_meta"] = raw_meta
+            st.session_state.last_meta = raw_meta
         else:
             comp = detect_compression(uploaded)
             df = pd.read_csv(uploaded, compression=comp)
             X = df.reindex(columns=train_cols).fillna(0).values
-            st.session_state["last_meta"] = None
+            st.session_state.last_meta = None
 
-        # 2) Optionally re-fit models
+        # Re-fit if needed
         iso_model.set_params(contamination=iso_cont); iso_model.fit(X)
         lof_model.set_params(contamination=lof_cont); lof_model.fit(X)
 
-        # 3) Predict
+        # Predict
         if model_choice=="Isolation Forest":
             preds = predict_iso(X)
         elif model_choice=="Autoencoder":
@@ -138,11 +145,11 @@ with tabs[0]:
             preds = np.logical_and(iso_p, ae_p).astype(int)
 
         df["anomaly"] = preds
-        st.session_state["last_df"]    = df
-        st.session_state["last_model"] = model_choice
-        st.session_state["ae_thresh"]  = ae_thresh
+        st.session_state.last_df    = df
+        st.session_state.last_model = model_choice
+        st.session_state.ae_thresh  = ae_thresh
 
-        # Display results
+        # Show results
         st.subheader("Sample Results")
         st.dataframe(df.head(10), use_container_width=True)
 
@@ -161,11 +168,11 @@ with tabs[0]:
 # ─── Tab 2: EDA ──────────────────────────────────────────────────────────────────
 with tabs[1]:
     st.header("📊 Exploratory Data Analysis")
-    if "last_df" not in st.session_state:
+    if st.session_state.last_df is None:
         st.info("Upload & predict to see EDA.")
     else:
-        df       = st.session_state["last_df"]
-        raw_meta = st.session_state["last_meta"]
+        df       = st.session_state.last_df
+        raw_meta = st.session_state.last_meta
 
         if raw_meta is not None:
             st.subheader("Protocol Breakdown")
@@ -193,11 +200,11 @@ with tabs[1]:
 # ─── Tab 3: Explain ─────────────────────────────────────────────────────────────
 with tabs[2]:
     st.header("🧠 Explainability")
-    choice = st.selectbox("Explain model:",[
+    choice = st.selectbox("Explain model:", [
         "Isolation Forest","Autoencoder","Local Outlier Factor"
     ])
     if choice=="Isolation Forest":
-        st.write("Global SHAP importances for Isolation Forest decisions.")
+        st.write("Global SHAP importances for Isolation Forest.")
         shap_df = iso_shap_imp.reset_index().rename(columns={"index":"feature",0:"importance"})
         fig = px.bar(shap_df, x="importance", y="feature", orientation="h",
                      labels={"importance":"Mean |SHAP value|"})
@@ -206,158 +213,111 @@ with tabs[2]:
 
     elif choice=="Autoencoder":
         st.write("Top features by autoencoder reconstruction error.")
-        df = st.session_state["last_df"]
+        df = st.session_state.last_df
         X  = scaler.transform(df[train_cols].values)
         rec= ae_model.predict(X)
         errs = pd.Series(np.mean((X-rec)**2,axis=0), index=train_cols)
         top = errs.nlargest(10).reset_index().rename(columns={"index":"feature",0:"error"})
         fig = px.bar(top, x="error", y="feature", orientation="h",
-                     labels={"error":"Reconstruction MSE"})
+                     labels={"error":"MSE"})
         st.plotly_chart(fig, use_container_width=True)
 
     else:
-        st.write("LOF ‘normality’ score distribution (lower = more anomalous).")
-        df     = st.session_state["last_df"]
-        X      = scaler.transform(df[train_cols].values)
+        st.write("LOF score distribution (lower = more anomalous).")
+        df = st.session_state.last_df
+        X  = scaler.transform(df[train_cols].values)
         scores = lof_scores(X)
-        fig    = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
+        fig = px.histogram(scores, nbins=50, labels={"value":"LOF score"})
         st.plotly_chart(fig, use_container_width=True)
 
 # ─── Tab 4: Embedding ────────────────────────────────────────────────────────────
 with tabs[3]:
     st.header("🔬 PCA Embedding of Network Traffic")
-    if "last_df" not in st.session_state:
+    if st.session_state.last_df is None:
         st.info("Upload & predict to see embedding.")
     else:
-        df = st.session_state["last_df"]
+        df = st.session_state.last_df
         X  = scaler.transform(df[train_cols].values)
-
-        # sample for speed
-        n = min(len(X), 5000)
+        n  = min(len(X), 5000)
         idxs = np.random.choice(len(X), n, replace=False)
-        Xs = X[idxs]
-        dfs = df.iloc[idxs].copy()
+        Xs = X[idxs]; dfs = df.iloc[idxs].copy()
 
-        dim = st.radio("Projection dimension:", ("2D", "3D"))
-        if dim == "2D":
-            pca = PCA(n_components=2)
-            coords = pca.fit_transform(Xs)
+        dim = st.radio("Projection dimension:", ("2D","3D"))
+        if dim=="2D":
+            pca = PCA(2); coords = pca.fit_transform(Xs)
             dfs["PC1"], dfs["PC2"] = coords[:,0], coords[:,1]
-            st.write("2-D PCA: Normal in blue, anomalies in red.")
             fig = px.scatter(dfs, x="PC1", y="PC2",
                              color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                             labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2"},
-                             title="PCA Projection (2D)")
+                             title="PCA (2D)")
         else:
-            pca = PCA(n_components=3)
-            coords = pca.fit_transform(Xs)
+            pca = PCA(3); coords = pca.fit_transform(Xs)
             dfs["PC1"], dfs["PC2"], dfs["PC3"] = coords[:,0], coords[:,1], coords[:,2]
-            st.write("3-D PCA: drag to rotate view.")
             fig = px.scatter_3d(dfs, x="PC1", y="PC2", z="PC3",
                                 color=dfs["anomaly"].map({0:"Normal",1:"Attack"}),
-                                labels={"color":"Anomaly","PC1":"PC1","PC2":"PC2","PC3":"PC3"},
-                                title="PCA Projection (3D)")
-
+                                title="PCA (3D)")
         fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-# ─── Tab 5: Learn ────────────────────────────────────────────────────────────────
+# ─── Tab 5: Live Feed ────────────────────────────────────────────────────────────
 with tabs[4]:
-    st.header("🎓 Educational Hub")
-    st.markdown("""
-**What is Anomaly Detection?**  
-Anomaly detection aims to find unusual patterns in data that do not conform to expected behavior.  
-These “outliers” can indicate fraud, network intrusions, system faults, and more.
-
----
-
-**Key Concepts**  
-- **Contamination**: The expected proportion of outliers in your dataset.  
-- **Threshold**: In Autoencoders, values above a reconstruction-error threshold are flagged.  
-- **Novelty vs. Outlier Detection**:  
-  - *Isolation Forest* and *LOF* can both detect anomalies directly on new (unseen) data.  
-  - *Autoencoder* must be trained only on “normal” data then applied to all data.
-
----
-
-**Model Summaries**  
-
-1. **Isolation Forest**  
-   - Constructs random decision trees and isolates points.  
-   - Faster on large datasets, interpretable via SHAP values.
-
-2. **Autoencoder**  
-   - Neural network that learns to reconstruct normal samples.  
-   - High reconstruction error → anomaly.
-
-3. **Local Outlier Factor (LOF)**  
-   - Measures local density deviation of a given data point.  
-   - Lower LOF score → more likely an anomaly.
-
----
-
-**Tips & Tricks**  
-- Start with a small contamination (e.g. 1–5%) and adjust based on precision/recall.  
-- Use multiple models (Hybrid) to improve robustness.  
-- Visualize errors (bar charts) to understand which features matter most.
-
----
-
-🔗 **Further Reading**  
-- Scikit-learn docs on [Isolation Forest](https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.IsolationForest.html)  
-- TensorFlow guide on [Autoencoders](https://www.tensorflow.org/tutorials/generative/autoencoder)  
-- LOF explanation on [Wikipedia](https://en.wikipedia.org/wiki/Local_outlier_factor)
-""")
-
-# ─── Tab 6: Live Feed ────────────────────────────────────────────────────────────
-with tabs[5]:
     st.header("⚡ Real-Time Streaming Feed")
-    speed = st.sidebar.slider("Update interval (sec)", 0.1, 5.0, 1.0, 0.1)
-
-    if "streaming" not in st.session_state:
-        st.session_state.streaming = False
-    if "stream_idx" not in st.session_state:
-        st.session_state.stream_idx = 0
-    if "stream_data" not in st.session_state:
-        st.session_state.stream_data = pd.DataFrame(columns=["timestamp","anomaly"])
-
-    start_btn, stop_btn = st.columns(2)
-    if start_btn.button("▶️ Start Streaming"):
+    interval = st.slider("Update interval (sec)", 0.1, 5.0, 1.0, 0.1)
+    if st.button("▶️ Start Streaming", key="start"):
         st.session_state.streaming = True
-        st.session_state.stream_idx = 0
-        st.session_state.stream_data = pd.DataFrame(columns=["timestamp","anomaly"])
-    if stop_btn.button("⏹ Stop Streaming"):
+    if st.button("⏹ Stop Streaming", key="stop"):
         st.session_state.streaming = False
 
-    if st.session_state.streaming:
-        placeholder = st.empty()
-        if "last_df" not in st.session_state:
-            st.warning("Please upload & predict first.")
-        else:
-            df = st.session_state["last_df"]
-            idx = st.session_state.stream_idx
-            if idx >= len(df):
-                st.info("End of data stream.")
-                st.session_state.streaming = False
-            else:
-                row = df.iloc[idx]
-                ts  = datetime.now()
-                an  = int(row["anomaly"])
-                new = pd.DataFrame({"timestamp":[ts],"anomaly":[an]})
-                st.session_state.stream_data = pd.concat(
-                    [st.session_state.stream_data, new],
-                    ignore_index=True
-                )
-                st.session_state.stream_idx += 1
-
-                fig = px.line(
-                    st.session_state.stream_data,
-                    x="timestamp", y="anomaly",
-                    title="Anomalies Over Time (Streaming)",
-                    markers=True
-                )
-                placeholder.plotly_chart(fig, use_container_width=True)
-                time.sleep(speed)
-                st.rerun()
+    placeholder = st.empty()
+    if st.session_state.streaming and st.session_state.last_df is not None:
+        chart = placeholder.line_chart(pd.DataFrame(columns=["anomaly"]))
+        # seed initial time zero
+        while st.session_state.streaming:
+            df = st.session_state.last_df
+            idx = np.random.randint(len(df))
+            new = pd.DataFrame(
+                {"anomaly":[ df.iloc[idx]["anomaly"] ]},
+                index=[pd.Timestamp.now()]
+            )
+            chart.add_rows(new)
+            time.sleep(interval)
     else:
-        st.write("Press **Start Streaming** to begin.")
+        placeholder.write("Press ▶️ to stream anomaly flags over time.")
+
+# ─── Tab 6: Education ────────────────────────────────────────────────────────────
+with tabs[5]:
+    st.header("📚 Educational Insights")
+    st.markdown("""
+    Dive deep into the mechanics of each anomaly detector and hybrid strategy.
+    Each section below unfolds key intuition, workflows, pros & cons, and real-world tips.
+    """)
+    with st.expander("Isolation Forest"):
+        st.write("""
+        - **Idea**: Randomly partition features; anomalies are easier to isolate.
+        - **Workflow**: Fit on data → anomaly score = path length in the random tree.
+        - **Pros**: Fast, unsupervised, no distributional assumptions.
+        - **Cons**: Sensitive to contamination setting; may miss subtle anomalies.
+        """)
+    with st.expander("Autoencoder"):
+        st.write("""
+        - **Idea**: Compress–reconstruct input; high reconstruction error ⇒ anomaly.
+        - **Workflow**: Train on ‘normal’ → measure per-example MSE at inference.
+        - **Pros**: Learns nonlinear representations; adaptive thresholds.
+        - **Cons**: Needs enough normal data; MSE threshold tuning is crucial.
+        """)
+    with st.expander("Local Outlier Factor"):
+        st.write("""
+        - **Idea**: Compare local density to neighbors; low-density points ⇒ outliers.
+        - **Workflow**: Fit on normal data → `decision_function` gives normality score.
+        - **Pros**: Captures local structure; no training/inference divide.
+        - **Cons**: O(n²) complexity; choice of `n_neighbors` impacts sensitivity.
+        """)
+    with st.expander("Hybrid Models"):
+        st.write("""
+        **Union** (🔁): Flag anomaly if **any** model says so  
+        &rarr; **High recall**, catch more attacks, risk more false alarms.  
+
+        **Intersection** (🔁): Flag anomaly only if **all** models agree  
+        &rarr; **High precision**, fewer false alarms, risk missing subtle anomalies.  
+        """)
+    st.markdown("**Real-World Tip:** Test both strategies to find your best trade-off!")
+
