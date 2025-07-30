@@ -1,85 +1,76 @@
-# NetworkAnomalyStreamlit
+# 🚨 NetworkAnomalyStreamlit
 
-🚨 **Interactive Network Traffic Anomaly Detection App**  
-Built with Streamlit, Scikit-Learn, TensorFlow/Keras and Plotly, this app lets you upload raw KDD-Cup traffic logs (CSV/GZ/ZIP) or a preprocessed features-only CSV, then:
+**Real-time Network Traffic Anomaly Detection Dashboard**  
+Built with **Streamlit + Scikit-Learn + TensorFlow/Keras + Plotly**
 
-- 🔍 **Detect anomalies** with Isolation Forest, Autoencoder, LOF or hybrid ensembles  
-- 📊 **Explore** your data via histograms, heatmaps & boxplots  
-- 🧠 **Explain** model decisions with SHAP importances & reconstruction-error bar charts  
-- 🔬 **Embed** high-dimensional flows into 2D/3D PCA for interactive visualization  
+---
 
-<img width="2535" height="678" alt="image" src="https://github.com/user-attachments/assets/94b81452-3786-4eba-a0ad-a23cda29cbac" />
+### What can you do?
 
-<img width="2513" height="1308" alt="image" src="https://github.com/user-attachments/assets/21ce6b63-a30d-435b-8faf-6ed4f8b16bcf" />
+| 🔎 Detect | 📊 Explore | 🧠 Explain | 🔬 Visualise | ⚡ Stream |
+|-----------|-----------|-----------|-------------|----------|
+| Isolation Forest · Deep Autoencoder · LOF · Hybrid (Union / Intersection) | Histograms · Heat-maps · Box-plots | SHAP bars · AE reconstruction-error ranks | 2-D / 3-D PCA (drag-rotate) | Live anomaly ticker for your SOC wall |
 
-<img width="2513" height="1265" alt="image" src="https://github.com/user-attachments/assets/3d8ff9e0-d109-4415-99f6-4bead457f9b1" />
+---
 
-<img width="1610" height="660" alt="image" src="https://github.com/user-attachments/assets/16a200d0-bda5-48ed-b872-d94f55d6bd3d" />
+## ✨ Feature Highlights
+1. **Zero-label friendly detectors**  
+   *Isolation Forest* & *LOF* (contamination sliders) — *Deep Autoencoder* (live threshold tuning) — Hybrid modes for recall vs. precision.
 
-<img width="2489" height="658" alt="image" src="https://github.com/user-attachments/assets/a32953d6-950b-4565-88e7-1d246e933dde" />
+2. **Rich EDA pane**  
+   Protocol breakdown · Numeric heat-map · Attack/normal box-plots — all dark-mode.
+
+3. **Explainability built-in**  
+   SHAP importances, AE error bars, LOF score histogram.
+
+4. **Interactive Embedding**  
+   2-D / 3-D PCA scatter; colour-coded anomalies.
+
+5. **⚡ Live Feed**  
+   Real-time streaming chart (0.1-5 s refresh) ­— great for demo loops.
+
+6. **📚 Education tab**  
+   Bite-size cheat-sheets on each algorithm + hybrid strategy.
+
+<img width="1600" height="836" alt="image" src="https://github.com/user-attachments/assets/3e1e76a8-3b31-489d-8059-d99068b19559" />
+<img width="1600" height="790" alt="image" src="https://github.com/user-attachments/assets/cc5028ad-ff8f-48a9-a7c8-2a5214e9a97c" />
+<img width="1600" height="549" alt="image" src="https://github.com/user-attachments/assets/a2468341-daef-45b5-9bd8-c0e412463f29" />
+<img width="1600" height="562" alt="image" src="https://github.com/user-attachments/assets/231a54c7-3fa6-42ac-b09f-f44f9a43ad54" />
+<img width="1600" height="684" alt="image" src="https://github.com/user-attachments/assets/c0024b31-7a21-4bb8-a5c0-b55b8f298e38" />
 
 
 ---
 
-## 🚀 Features
+## ⚙️ Quick-start
 
-1. **Raw or preprocessed upload**  
-   - Auto-detect `.csv`, `.gz` & `.zip`; sample first *N* rows for speed  
-   - One-click one-hot encoding & scaling for KDD-Cup data  
+```bash
+git clone https://github.com/<your-username>/NetworkAnomalyStreamlit.git
+cd NetworkAnomalyStreamlit
+pip install -r requirements.txt          # create a venv first if you like
+```
+## Drop the pre-trained artefacts (or train your own) into the repo:
+models/
 
-2. **Multiple detectors & sliders**  
-   - Isolation Forest & Local Outlier Factor with adjustable contamination  
-   - Deep Autoencoder with real-time threshold tuning  
-   - “Union” & “Intersection” hybrid modes  
+  iso_model.pkl,
+  lof_model.pkl,
+  autoencoder_model.h5,
+  scaler.pkl
 
-3. **Rich EDA**  
-   - Protocol-type breakdown bar charts  
-   - Numeric feature correlations via heatmap  
-   - Attack vs. normal boxplots  
+data/
 
-4. **Explainability**  
-   - Global SHAP bar chart for Isolation Forest  
-   - Top-N reconstruction-error features for autoencoder  
-   - LOF score distributions  
-
-5. **Embedding**  
-   - 2D & 3D PCA scatter plots (drag-rotate in 3D)  
-   - Color-code anomalies vs. normals  
-
----
-
-## 📥 Installation
-
-1. **Clone**
-
-   ```bash
-   git clone https://github.com/<your-username>/NetworkAnomalyStreamlit.git
-   cd NetworkAnomalyStreamlit
-2. **Install dependencies**
-
-    pip install -r requirements.txt
-
-3. **Download artifacts**
-
-Place the following files in the repo root:
-
-iso_model.pkl
-
-lof_model.pkl
-
-autoencoder_model.h5
-
-scaler.pkl
-
-train_cols.pkl
-
-iso_shap_importances.csv
-
-
-4. **Run**:
+  train_cols.pkl,
+  iso_shap_importances.csv
 
 streamlit run app.py
 
-Then open http://localhost:8501 in your browser.
+## 🚀 Road-map
+> NetFlow / Zeek / PCAP loaders
 
+> Transformer-based sequence models
+
+> Docker-compose deployment
+
+> Alert web-hook & Slack sink
+
+**Contributions & ideas welcome — open an issue or ping me on LinkedIn. 🚀**
 
